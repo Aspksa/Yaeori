@@ -1,4 +1,4 @@
-import { getClusters, getDisputes, getRecallCfg, resolveDispute, setRecallCfg, confirmMemory, correctMemory, getSleep, runSleep, createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
+import { getClusters, getAsOf, getHypotheses, getDisputes, getRecallCfg, resolveDispute, setRecallCfg, confirmMemory, correctMemory, getSleep, runSleep, createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
 import { mountList } from "./list";
 import { esc as mdEsc, renderText } from "./md";
 export { renderText };
@@ -74,7 +74,7 @@ export function mountHome(): () => void {
     review: () => reviewMemories(), merge: (k, d, hs) => mergeMemories(k, d, hs).then(() => refreshGraph()),
     compress: (ids, text, topic) => compressMemories(ids, text, topic).then(() => refreshGraph()),
     inactive: () => getInactive().then((r) => r.items), entities: () => getEntities().then((r) => r.items), restore: (id) => restoreMemory(id).then(() => refreshGraph()),
-    clusters: () => getClusters(), recallCfg: () => getRecallCfg(), setRecallCfg: (c) => setRecallCfg(c), disputes: () => getDisputes().then((r) => r.items), resolve: (a, b, k) => resolveDispute(a, b, k).then(() => refreshGraph()),
+    clusters: () => getClusters(), hypotheses: () => getHypotheses().then((r) => r.items), confirm: (id) => confirmMemory(id).then((r) => { void refreshGraph(); return r; }), correct: (id, t) => correctMemory(id, t).then((r) => { void refreshGraph(); return r; }), asOf: (d, q) => getAsOf(d, q), recallCfg: () => getRecallCfg(), setRecallCfg: (c) => setRecallCfg(c), disputes: () => getDisputes().then((r) => r.items), resolve: (a, b, k) => resolveDispute(a, b, k).then(() => refreshGraph()),
     sleepInfo: () => getSleep(), sleep: () => runSleep().then((r) => { void refreshGraph(); return r; }),
     build: () => { building = true; syncList(); void buildVectors().then((v) => { vec = v; }, () => {}).finally(() => { building = false; syncList(); void refreshGraph(); }); },
     setEmbedModel: (m) => void saveConn({ embedModel: m }).then(() => { vec = null; return getVectors(); }).then((v) => { vec = v; }, () => {}).finally(syncList) });
@@ -228,6 +228,7 @@ export function mountHome(): () => void {
           n.append(det); thread.insertBefore(n, out);
         }
         if (e.delta) { if (!answered) { answered = true; graph.think(false); graph.flow(["core", "chat:" + id], "bot"); } acc += e.delta; if (!frame) frame = requestAnimationFrame(paint); }
+        if (e.tool) { const n = document.createElement("div"); n.className = "msg notice"; n.textContent = "🔧 " + e.tool.text; thread.insertBefore(n, out); if (e.tool.changed) void refreshGraph(); }
         if (e.notice) { const n = document.createElement("div"); n.className = "msg notice"; n.textContent = e.notice; thread.insertBefore(n, out); }
         if (e.error) { graph.think(false); failed = true; out.className = "msg error"; out.innerHTML = errorHtml(e); }
         if (e.done) { finished = true; if (frame) { cancelAnimationFrame(frame); frame = 0; } shown = acc.length; paint(); if (ctrl === my) setBusy(false); }

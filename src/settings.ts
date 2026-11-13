@@ -93,6 +93,7 @@ function memoryBody() {
   if (!conn) return `<p class="muted">Загрузка…</p>`;
   const items = (mem?.items ?? []).map((m) => `<div class="mem-item"><div>${esc(m.text)}<small>${m.topics.map(esc).join(", ")} · подтверждено ×${m.hits}</small></div><button class="btn small" data-mem-del="${m.id}" aria-label="Забыть: ${esc(m.text)}">Забыть</button></div>`).join("");
   return `<label class="viz-check"><input type="checkbox" id="set-memory" ${conn.memory ? "checked" : ""}> Запоминать факты из бесед</label>
+    <label class="viz-check"><input type="checkbox" id="set-tools" ${conn.tools !== false ? "checked" : ""}${conn.memory ? "" : " disabled"}> Инструменты памяти в чате: модель сама ищет, записывает и убирает (записи ждут вашего подтверждения)</label>
     <p class="muted">Факты хранятся только на этом компьютере. Чтобы их выделять и учитывать в ответах, они отправляются в модель Cloud.ru вместе с беседой. Модели велено не запоминать пароли, ключи, номера карт и документов.</p>
     <div class="row"><button class="btn" data-act="scan"${busy || !conn.keySet || !conn.model ? " disabled" : ""}>Вспомнить из бесед</button>
       <button class="btn danger" data-act="forget-all"${mem?.total ? "" : " disabled"}>Забыть всё</button>
@@ -163,6 +164,7 @@ export function bindSettings(ctx: Ctx) {
   document.addEventListener("change", (e) => {
     const t = e.target as HTMLInputElement;
     if (t.dataset.custom !== undefined) ctx.rerender();
+    if (t.id === "set-tools") { saveConn({ tools: t.checked }).then((c) => { conn = c; }, () => {}).finally(ctx.rerender); return; }
     if (t.id === "set-memory") { saveConn({ memory: t.checked }).then((c) => { conn = c; }, () => {}).finally(ctx.rerender); return; }
     if (t.id === "set-model" || t.id === "set-fb") { // сохраняется сразу, без отдельной кнопки
       saveConn(t.id === "set-model" ? { model: t.value } : { fallbackModel: t.value }).then((c) => { conn = c; drafts.delete("set-model"); status = ""; }, (e: Error) => { status = e.message; }).finally(refreshModels);

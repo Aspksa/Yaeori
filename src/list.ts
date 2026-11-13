@@ -1,10 +1,10 @@
-import type { ChatInfo, Clusters, Dispute, Entity, Inactive, RecallCfg, Review, SleepInfo, VecInfo } from "./api";
+import type { AsOf, ChatInfo, Clusters, Dispute, Hypothesis, Entity, Inactive, RecallCfg, Review, SleepInfo, VecInfo } from "./api";
 import type { GraphData } from "./api";
 
 type Tab = "chats" | "memory" | "sense" | "links";
 type Filter = "all" | "fresh" | "long" | "fading";
 export interface ListState { chats: ChatInfo[]; brain: GraphData | null; current: number; vec: VecInfo | null; building?: boolean }
-export interface ListHandlers { more(areaId: number): void; openChat(id: number): void; focus(token: string): void; pin(tokens: string[]): void; kinds(k: string[]): void; edit(id: number, patch: { text?: string; topics?: string; pinned?: boolean }): Promise<unknown>; forget(id: number): Promise<unknown>; review(): Promise<Review>; merge(keep: number, drop: number[], history?: boolean): Promise<unknown>; compress(ids: number[], text: string, topic: string): Promise<unknown>; inactive(): Promise<Inactive[]>; entities(): Promise<Entity[]>; restore(id: number): Promise<unknown>; clusters(): Promise<Clusters>; recallCfg(): Promise<RecallCfg>; setRecallCfg(c: { weights?: RecallCfg["weights"]; rerank?: boolean }): Promise<RecallCfg>; disputes(): Promise<Dispute[]>; resolve(a: number, b: number, keep: number | null): Promise<unknown>; sleepInfo(): Promise<{ last: SleepInfo | null; sleeping: boolean }>; sleep(): Promise<SleepInfo>; build(): void; setEmbedModel(m: string): void }
+export interface ListHandlers { more(areaId: number): void; openChat(id: number): void; focus(token: string): void; pin(tokens: string[]): void; kinds(k: string[]): void; edit(id: number, patch: { text?: string; topics?: string; pinned?: boolean }): Promise<unknown>; forget(id: number): Promise<unknown>; review(): Promise<Review>; merge(keep: number, drop: number[], history?: boolean): Promise<unknown>; compress(ids: number[], text: string, topic: string): Promise<unknown>; inactive(): Promise<Inactive[]>; entities(): Promise<Entity[]>; restore(id: number): Promise<unknown>; clusters(): Promise<Clusters>; hypotheses(): Promise<Hypothesis[]>; confirm(id: number): Promise<unknown>; correct(id: number, text: string): Promise<unknown>; asOf(date: string, q: string): Promise<AsOf>; recallCfg(): Promise<RecallCfg>; setRecallCfg(c: { weights?: RecallCfg["weights"]; rerank?: boolean }): Promise<RecallCfg>; disputes(): Promise<Dispute[]>; resolve(a: number, b: number, keep: number | null): Promise<unknown>; sleepInfo(): Promise<{ last: SleepInfo | null; sleeping: boolean }>; sleep(): Promise<SleepInfo>; build(): void; setEmbedModel(m: string): void }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const DAY = 86400000;
@@ -24,6 +24,7 @@ const FILTERS: [Filter, string][] = [["all", "Все"], ["fresh", "Свежие"
 export function mountList(root: HTMLElement, h: ListHandlers) {
   let tab: Tab = "chats", q = "", filter: Filter = "all", st: ListState = { chats: [], brain: null, current: 0, vec: null };
   let clu: Clusters | null = null, cluAsked = false, cluStale = false, cluBusy = false; const cluOpen = new Set<number>();
+  let hyp: Hypothesis[] | null = null, hypAsked = false, hypStale = false, asDate = "", asQ = "", asRes: AsOf | null = null, asBusy = false, asErr = "";
   let cfg: RecallCfg | null = null, cfgAsked = false, cfgNote = "", disp: Dispute[] | null = null, dispAsked = false;
   let slp: { last: SleepInfo | null; sleeping: boolean } | null = null, slpBusy = false, slpAsked = false;
   const closed = new Set<number>(), pages = new Map<number, number>(), relOpen = new Set<number>(); let locked: string | null = null, editing: number | null = null, rev: Review | null = null, revBusy = false, revNote = "", archOpen = false, inact: Inactive[] | null = null, ents: Entity[] | null = null, entLoading = false; const entOpen = new Set<number>(), kindsOn = new Set(["topic", "sense", "chat", "entity", "habit"]);
@@ -76,19 +77,28 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     return `<details class="ls-vec"><summary><b>Как искать</b></summary><small>Что важнее при вспоминании. По умолчанию всё поровну.</small>${sl("vec", "По смыслу")}${sl("lex", "По словам")}${sl("imp", "Важность и свежесть")}
       <label class="ls-ck"><input type="checkbox" data-rr="1"${cfg.rerank ? " checked" : ""} /> Переранжировать моделью (точнее, но каждый ответ чуть дольше)</label><div class="ls-vb"><button type="button" class="ls-btn" data-cfg="1">Сохранить</button>${cfgNote ? `<small>${esc(cfgNote)}</small>` : ""}</div></details>`;
   }
+  function hypHtml() {
+    if (!hypAsked || hypStale) { hypAsked = true; hypStale = false; void h.hypotheses().then((x) => { hyp = x; }, () => {}).finally(render); }
+    if (!hyp?.length) return "";
+    return `<div class="ls-vec"><div class="ls-vh"><b>Проверьте выводы</b></div><small>Это не сказано прямо: вывод, сделанный по вашим фактам, или запись, которую модель сделала сама. Пока вы не подтвердили, они весят меньше и подаются как предположение.</small>${hyp.map((x) => `<div class="ls-card"><p>${esc(x.text)}</p><small>${x.src === "reflect" ? "вывод по теме" : "записано в беседе"} «${esc(x.topics[0] ?? "")}»</small><div class="ls-eb"><button type="button" class="ls-btn" data-hok="${x.id}">Верно</button><button type="button" class="ls-btn" data-hed="${x.id}">Исправить</button><button type="button" class="ls-btn" data-hno="${x.id}">Неверно</button></div></div>`).join("")}</div>`;
+  }
+  function asofHtml() {
+    const rows = asRes ? asRes.items.slice(0, 15).map((m) => `<div class="ls-mem"><button type="button" class="ls-row" data-clm="${m.id}"><span class="ls-t">${esc(m.text)}</span></button>${m.replaced ? `<small>позже заменено</small>` : m.validTo ? `<small>верно до ${esc(m.validTo)}</small>` : ""}</div>`).join("") + (asRes.total > 15 ? `<small>Показано 15 из ${asRes.total}</small>` : "") : "";
+    return `<div class="ls-vec"><div class="ls-vh"><b>Срез на дату</b></div><small>Что я уже знала в тот день и что тогда ещё было верно.</small><div class="ls-vb"><input type="date" class="ls-em" data-asd value="${esc(asDate)}" aria-label="Дата"><input type="search" class="ls-em" data-asq value="${esc(asQ)}" placeholder="О чём (необязательно)" aria-label="О чём"><button type="button" class="ls-btn" data-asgo="1"${asBusy || !asDate ? " disabled" : ""}>${asBusy ? "Ищу…" : "Показать"}</button></div>${asErr ? `<small class="ls-warn">${esc(asErr)}</small>` : ""}${asRes ? (rows || `<p class="ls-none">На эту дату ничего не знала.</p>`) : ""}</div>`;
+  }
   function senseHtml() {
     if (!cluAsked || cluStale) { cluAsked = true; cluStale = false; cluBusy = true; void h.clusters().then((x) => { clu = x; }, () => {}).finally(() => { cluBusy = false; render(); }); }
-    if (!clu) return `<p class="ls-none">${cluBusy ? "Считаю скопления…" : "Скопления не загрузились."}</p>`;
+    if (!clu) return hypHtml() + asofHtml() + `<p class="ls-none">${cluBusy ? "Считаю скопления…" : "Скопления не загрузились."}</p>`;
     const note = `<p class="ls-note">Группы по смыслу, независимо от тем. С вектором ${clu.withVec} из ${clu.total}.${cluBusy ? " Обновляю…" : ""}</p>`;
-    if (!clu.items.length) return note + `<p class="ls-none">Скопления появятся, когда посчитаются векторы (нужно хотя бы 6 воспоминаний с вектором).</p>`;
-    return note + clu.items.map((c) => {
+    if (!clu.items.length) return hypHtml() + asofHtml() + note + `<p class="ls-none">Скопления появятся, когда посчитаются векторы (нужно хотя бы 6 воспоминаний с вектором).</p>`;
+    return hypHtml() + asofHtml() + note + clu.items.map((c) => {
       const open = cluOpen.has(c.id);
       return `<section class="ls-g"><button type="button" class="ls-gh" data-cl="${c.id}" aria-expanded="${open}"><b>${esc(c.label)}</b><span>${c.size}</span></button>${open ? `<p class="ls-sum">${c.mix ? "Разные темы: " : "Темы: "}${c.topics.map((t) => `${esc(t.t)} ${t.n}`).join(" · ")}${c.mix ? ". Возможно, их стоит объединить." : ""}</p>${c.top.map((m) => `<div class="ls-mem"><button type="button" class="ls-row" data-clm="${m.id}"><span class="ls-t">${esc(m.text)}</span></button></div>`).join("")}<button type="button" class="ls-more" data-clp="${c.id}">Показать всё скопление на карте (${Math.min(c.size, c.ids.length)})</button>` : ""}</section>`;
     }).join("");
   }
   function sleepHtml() {
     if (!slpAsked) { slpAsked = true; void h.sleepInfo().then((x) => { slp = x; render(); }, () => {}); }
-    const l = slp?.last, txt = l ? `Последний раз ${ago(l.at)}: слито ${l.merged}, сжато ${l.compressed}, забыто ${l.archived}${l.backup ? `, копия ${esc(l.backup)}` : ""}.` : "Ещё не спала. Сама убирается по ночам.";
+    const l = slp?.last, txt = l ? `Последний раз ${ago(l.at)}: слито ${l.merged}, сжато ${l.compressed}, забыто ${l.archived}${l.reflected ? `, новых выводов ${l.reflected}` : ""}${l.stale?.checked ? `, самопроверка ${l.stale.ok}/${l.stale.checked}` : ""}${l.backup ? `, копия ${esc(l.backup)}` : ""}.` : "Ещё не спала. Сама убирается по ночам.";
     return `<div class="ls-vec"><div class="ls-vh"><b>Сон</b></div><small>${txt}</small><div class="ls-vb"><button type="button" class="ls-btn" data-sleep="1"${slpBusy || slp?.sleeping ? " disabled" : ""}>${slpBusy || slp?.sleeping ? "Убираюсь…" : "Выспаться сейчас"}</button></div></div>`;
   }
   function reviewHtml() {
@@ -143,7 +153,7 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     const top = body.scrollTop; body.innerHTML = tab === "chats" ? chatsHtml() : tab === "memory" ? memHtml() : tab === "sense" ? senseHtml() : linksHtml(); body.scrollTop = top;
   }
   root.addEventListener("click", (e) => {
-    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-cl],[data-clm],[data-clp],[data-cfg],[data-dk-a],[data-dk-b],[data-dk-both],[data-sleep],[data-pg],[data-more],[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area],[data-build],[data-em],[data-rel],[data-pair],[data-kind],[data-pin],[data-edit],[data-cancel],[data-forget],[data-review],[data-mg],[data-skip-mg],[data-keep-a],[data-keep-b],[data-skip-cf],[data-cp],[data-skip-cp],[data-arch],[data-restore],[data-ent]"); if (!t) return;
+    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-hok],[data-hed],[data-hno],[data-asgo],[data-cl],[data-clm],[data-clp],[data-cfg],[data-dk-a],[data-dk-b],[data-dk-both],[data-sleep],[data-pg],[data-more],[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area],[data-build],[data-em],[data-rel],[data-pair],[data-kind],[data-pin],[data-edit],[data-cancel],[data-forget],[data-review],[data-mg],[data-skip-mg],[data-keep-a],[data-keep-b],[data-skip-cf],[data-cp],[data-skip-cp],[data-arch],[data-restore],[data-ent]"); if (!t) return;
     const d = t.dataset;
     if (d.review) { revBusy = true; revNote = ""; render(); void h.review().then((r) => { rev = r; }, (e: Error) => { revNote = e.message; }).finally(() => { revBusy = false; render(); }); }
     else if (d.mg) { const g = rev?.merges[Number(d.mg)]; if (g) { rev!.merges.splice(Number(d.mg), 1); void h.merge(g.keep, g.items.filter((i) => i.id !== g.keep).map((i) => i.id)); render(); } }
@@ -163,6 +173,10 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     else if (d.build) h.build();
     else if (d.em) h.setEmbedModel(root.querySelector<HTMLInputElement>(".ls-em")?.value.trim() ?? "");
     else if (d.dkA !== undefined || d.dkB !== undefined || d.dkBoth !== undefined) { const i = Number(d.dkA ?? d.dkB ?? d.dkBoth), x = disp?.[i]; if (x) { disp!.splice(i, 1); void h.resolve(x.a.id, x.b.id, d.dkBoth !== undefined ? null : d.dkA !== undefined ? x.a.id : x.b.id); render(); } }
+    else if (d.hok) { const id = Number(d.hok); hyp = hyp?.filter((x) => x.id !== id) ?? null; void h.confirm(id); render(); }
+    else if (d.hed) { const id = Number(d.hed), x = hyp?.find((y) => y.id === id), v = x ? window.prompt("Как правильно?", x.text) : null; if (x && v && v.trim() && v.trim() !== x.text) { hyp = hyp!.filter((y) => y.id !== id); void h.correct(id, v.trim()); render(); } }
+    else if (d.hno) { const id = Number(d.hno); hyp = hyp?.filter((x) => x.id !== id) ?? null; void h.forget(id); render(); }
+    else if (d.asgo !== undefined) { if (!asDate) return; asBusy = true; asErr = ""; render(); void h.asOf(asDate, asQ).then((r) => { asRes = r; }, (e: Error) => { asErr = e.message; asRes = null; }).finally(() => { asBusy = false; render(); }); }
     else if (d.cl) { const id = Number(d.cl); if (cluOpen.has(id)) cluOpen.delete(id); else cluOpen.add(id); render(); }
     else if (d.clm) { const tk = "mem:" + d.clm; h.focus(tk); locked = tk; h.pin([tk]); }
     else if (d.clp) { const c = clu?.items.find((x) => x.id === Number(d.clp)); if (c) { locked = "cl:" + c.id; h.pin(c.ids.map((i) => "mem:" + i)); h.focus("mem:" + c.ids[0]); } }
@@ -179,6 +193,7 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     else if (d.src) h.openChat(Number(d.src));
     else if (d.area) { const id = Number(d.area); if (closed.has(id)) closed.delete(id); else closed.add(id); render(); }
   });
+  root.addEventListener("input", (e) => { const el = e.target as HTMLInputElement; if (el.dataset?.asd !== undefined) { asDate = el.value; root.querySelector<HTMLButtonElement>("[data-asgo]")?.toggleAttribute("disabled", !asDate || asBusy); } else if (el.dataset?.asq !== undefined) asQ = el.value; });
   root.addEventListener("submit", (e) => {
     const f = (e.target as HTMLElement).closest<HTMLFormElement>("form[data-form]"); if (!f) return; e.preventDefault();
     const id = Number(f.dataset.form), text = f.querySelector("textarea")!.value, topics = f.querySelector<HTMLInputElement>("input")!.value;
@@ -188,5 +203,5 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
   root.addEventListener("mouseout", (e) => { if ((e.target as HTMLElement).closest("[data-mem]") && !locked) h.pin([]); });
   input.addEventListener("input", () => { q = input.value.trim().toLowerCase(); render(); });
   render();
-  return { update(s: ListState) { st = s; ents = null; cluStale = true; render(); } };
+  return { update(s: ListState) { st = s; ents = null; cluStale = true; hypStale = true; render(); } };
 }
