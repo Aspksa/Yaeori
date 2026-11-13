@@ -90,7 +90,7 @@ export function createApp({ root, db, dist = null }) {
       const sys = LEARN.replace("{N}", "4") + topicHint() + " Если запоминать нечего, верни [].";
       const txt = await askModel(s, model, sys, `${sm ? `Кратко о беседе до этого: ${sm.slice(0, 600)}\n\n` : ""}Пользователь: ${userText.slice(0, 1500)}\n\nОтвет ассистента: ${reply.slice(0, 700)}`);
       const res = db.remember(parseFacts(txt), id);
-      if (res.addedIds?.length) await indexVectors(s, 16);
+      if (res.addedIds?.length) { await indexVectors(s, 16); try { db.dedupeNew(res.addedIds); } catch { /* не критично */ } }
       return res;
     } catch (e) { return { error: e?.explained ?? explainNet(e) }; }
   }
@@ -156,9 +156,19 @@ export function createApp({ root, db, dist = null }) {
       }
     } catch { /* сводки не обязательны */ } finally { topicBusy = false; }
   }
+  /** Переранжирование моделью (по настройке): из кандидатов оставляем те, что нужны для ответа. Любая ошибка или задержка больше 6 с: берём прежний порядок. */
+  async function rerankMem(s, text, mem) {
+    try {
+      const sys = "Из списка воспоминаний выбери те, что нужны, чтобы ответить на вопрос пользователя. Верни только JSON-массив id, самые полезные первыми, не больше 10. Если ничего не нужно, верни [].";
+      const txt = await Promise.race([askModel(s, s.model, sys, `Вопрос: ${text.slice(0, 500)}\n\nВоспоминания:\n${mem.map((m) => `${m.id}: ${m.text}`).join("\n")}`, 120), new Promise((_, rej) => setTimeout(() => rej(new Error("slow")), 6000))]);
+      const a = txt.indexOf("["), b = txt.lastIndexOf("]"), ids = JSON.parse(txt.slice(a, b + 1)).map(Number), by = new Map(mem.map((m) => [m.id, m]));
+      const chosen = ids.filter((i) => by.has(i)).map((i) => by.get(i)), keep = mem.filter((m) => m.session && !ids.includes(m.id));
+      return chosen.length ? [...keep, ...chosen].slice(0, 12) : mem.slice(0, 12);
+    } catch { return mem.slice(0, 12); }
+  }
   const memoryNote = (mem) => {
     if (!mem.length) return "";
-    return "\n\nТы помнишь о собеседнике из прошлых бесед (используй естественно, не пересказывай список):\n" + mem.map((m) => "- " + m.text + (m.past ? ` (было раньше${m.validTo ? ", до " + m.validTo : ""}, сейчас уже не так)` : "")).join("\n");
+    return "\n\nТы помнишь о собеседнике из прошлых бесед (используй естественно, не пересказывай список):\n" + mem.map((m) => "- " + m.text + (m.past ? ` (было раньше${m.validTo ? ", до " + m.validTo : ""}, сейчас уже не так)` : "") + (m.disputed ? " (спорно: есть противоречащий факт, не утверждай это уверенно)" : "")).join("\n");
   };
 
   /** Ответ модели идёт построчно (NDJSON): {"delta":"…"} … {"done":true} или {"error":"…"}. */
@@ -173,8 +183,8 @@ export function createApp({ root, db, dist = null }) {
     if (!s.model) { send(other("NO_MODEL")); return res.end(); }
     const ctrl = new AbortController();
     res.on("close", () => ctrl.abort());
-    const sum = db.getSummary(id), history = (sum ? db.messagesAfter(id, sum.upto, 24) : db.recent(id, 20)).map((m) => ({ role: m.role, content: m.content })), mem = s.memory !== false ? db.recall(text, 12, await embed(s, [text], 6000).then((v) => v[0]).catch(() => null), id) : [], system = SYSTEM + memoryNote(mem) + (s.memory !== false ? digestNote() : "") + (sum ? "\n\nКратко о том, что было раньше в этой беседе: " + sum.text : "");
-    if (mem.length) send({ recalled: mem.map((m) => ({ id: m.id, text: m.text, hop: Boolean(m.hop), session: Boolean(m.session), past: Boolean(m.past) })) });
+    const sum = db.getSummary(id), history = (sum ? db.messagesAfter(id, sum.upto, 24) : db.recent(id, 20)).map((m) => ({ role: m.role, content: m.content })), rr = s.memory !== false && s.key && db.getRecallCfg().rerank, mem0 = s.memory !== false ? db.recall(text, rr ? 20 : 12, await embed(s, [text], 6000).then((v) => v[0]).catch(() => null), id) : [], mem = rr && mem0.length > 8 ? await rerankMem(s, text, mem0) : mem0, system = SYSTEM + memoryNote(mem) + (s.memory !== false ? digestNote() : "") + (sum ? "\n\nКратко о том, что было раньше в этой беседе: " + sum.text : "");
+    if (mem.length) send({ recalled: mem.map((m) => ({ id: m.id, text: m.text, hop: Boolean(m.hop), session: Boolean(m.session), past: Boolean(m.past), disputed: Boolean(m.disputed) })) });
     const order = [s.model, ...(s.fallbackModel && s.fallbackModel !== s.model ? [s.fallbackModel] : [])];
     let lastErr = null;
     for (let mi = 0; mi < order.length; mi++) {
@@ -316,6 +326,10 @@ export function createApp({ root, db, dist = null }) {
       const r = db.compressMemories((Array.isArray(b.ids) ? b.ids : []).map(Number), b.text, String(b.topic ?? "")); if (!r) return json(res, 400, { error: "Нечего сжимать" });
       setTimeout(() => void tick(), 300); return json(res, 200, r);
     }
+    if (pathname === "/api/recall" && req.method === "GET") return json(res, 200, db.getRecallCfg());
+    if (pathname === "/api/recall" && req.method === "PUT") { let b; try { b = await body(req, 2048); } catch { return json(res, 400, { error: "Некорректный запрос" }); } db.setRecallCfg({ weights: b.weights && typeof b.weights === "object" ? b.weights : undefined, rerank: typeof b.rerank === "boolean" ? b.rerank : undefined }); return json(res, 200, db.getRecallCfg()); }
+    if (pathname === "/api/disputes" && req.method === "GET") return json(res, 200, { items: db.disputes() });
+    if (pathname === "/api/disputes/resolve" && req.method === "POST") { let b; try { b = await body(req, 2048); } catch { return json(res, 400, { error: "Некорректный запрос" }); } return json(res, 200, db.resolveDispute(Number(b.a), Number(b.b), b.keep == null ? null : Number(b.keep))); }
     if (pathname === "/api/sleep" && req.method === "GET") return json(res, 200, { last: sleepInfo(), sleeping });
     if (pathname === "/api/sleep" && req.method === "POST") { const r = await sleepCycle(read()); return r ? json(res, 200, r) : json(res, 409, { error: "Уже убираюсь" }); }
     const cf = /^\/api\/memories\/(\d+)\/(confirm|correct)$/.exec(pathname);

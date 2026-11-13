@@ -283,3 +283,7 @@ button.pill{border:0;font:inherit;font-size:var(--fs-sm);font-weight:600;cursor:
 .rc-b { padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: none; color: inherit; font: inherit; font-size: 11px; cursor: pointer; opacity: .8; }
 .rc-b:hover:not(:disabled), .rc-b:focus-visible { opacity: 1; background: var(--hover); }
 .rc-b:disabled { opacity: .45; cursor: default; }
+.ls-sl { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0 0; font-size: 12px; }
+.ls-sl input { flex: 0 0 55%; accent-color: var(--accent, #b8860b); }
+.ls-ck { display: flex; gap: 6px; align-items: flex-start; margin: 8px 0 0; font-size: 12px; }
+details.ls-vec > summary { cursor: pointer; }
