@@ -2,7 +2,7 @@ import { createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listC
 import { mountList } from "./list";
 import { esc as mdEsc, renderText } from "./md";
 export { renderText };
-import { buildVectors, compressMemories, forgetMemory, getInactive, getVectors, mergeMemories, restoreMemory, reviewMemories, saveConn, updateMemory, type VecInfo } from "./api";
+import { buildVectors, compressMemories, forgetMemory, getEntities, getInactive, getVectors, mergeMemories, restoreMemory, reviewMemories, saveConn, updateMemory, type VecInfo } from "./api";
 import { AREA_OFF, DEFAULT_MAP, NEURON_OFF, MAP_THEMES, mountGraph, type GraphHandle, type Grouping, type Layout, type MapOptions, type MapTheme, type SysItem } from "./graph";
 
 const esc = mdEsc;
@@ -73,7 +73,7 @@ export function mountHome(): () => void {
     edit: (id, p) => updateMemory(id, p).then(() => refreshGraph()), forget: (id) => forgetMemory(id).then(() => refreshGraph()),
     review: () => reviewMemories(), merge: (k, d, hs) => mergeMemories(k, d, hs).then(() => refreshGraph()),
     compress: (ids, text, topic) => compressMemories(ids, text, topic).then(() => refreshGraph()),
-    inactive: () => getInactive().then((r) => r.items), restore: (id) => restoreMemory(id).then(() => refreshGraph()),
+    inactive: () => getInactive().then((r) => r.items), entities: () => getEntities().then((r) => r.items), restore: (id) => restoreMemory(id).then(() => refreshGraph()),
     build: () => { building = true; syncList(); void buildVectors().then((v) => { vec = v; }, () => {}).finally(() => { building = false; syncList(); void refreshGraph(); }); },
     setEmbedModel: (m) => void saveConn({ embedModel: m }).then(() => { vec = null; return getVectors(); }).then((v) => { vec = v; }, () => {}).finally(syncList) });
   let vecTimer = 0;
@@ -208,8 +208,8 @@ export function mountHome(): () => void {
         if (e.user) void refreshGraph();
         if (e.recalled?.length) {
           e.recalled.slice(0, 8).forEach((m, i) => graph.flow(["mem:" + m.id, "core", "chat:" + id], m.hop ? "accent" : "bot", 200 + i * 150));
-          const n = document.createElement("div"); n.className = "msg notice"; const shown = e.recalled.slice(0, 3).map((m) => m.text.replace(/\.$/, "")).join(" · ");
-          n.textContent = `Вспомнила (${e.recalled.length}): ${shown.length > 140 ? shown.slice(0, 139) + "…" : shown}`; thread.insertBefore(n, out);
+          const n = document.createElement("div"); n.className = "msg notice"; const nSess = e.recalled.filter((m) => m.session).length, shown = e.recalled.slice(0, 3).map((m) => m.text.replace(/\.$/, "")).join(" · ");
+          n.textContent = `Вспомнила (${e.recalled.length}${nSess ? `, из этой беседы ${nSess}` : ""}): ${shown.length > 140 ? shown.slice(0, 139) + "…" : shown}`; thread.insertBefore(n, out);
         }
         if (e.delta) { if (!answered) { answered = true; graph.think(false); graph.flow(["core", "chat:" + id], "bot"); } acc += e.delta; if (!frame) frame = requestAnimationFrame(paint); }
         if (e.notice) { const n = document.createElement("div"); n.className = "msg notice"; n.textContent = e.notice; thread.insertBefore(n, out); }

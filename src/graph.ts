@@ -82,7 +82,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   let tour: { on: boolean; i: number; at: number } = { on: false, i: -1, at: 0 };
   const seen = new Set<number>();
   interface Fx { keys: string[]; t0: number; dur: number; col: "user" | "bot" | "accent"; reached: number }
-  let linkKinds = new Set(["topic", "sense", "chat"]);
+  let linkKinds = new Set(["topic", "sense", "chat", "entity"]);
   let pin: Set<string> | null = null; const pinNb = new Set<string>();
   let camGoal: { x: number; y: number; k: number } | null = null;
   const fxs: Fx[] = [], rings: { key: string; t0: number; col: "user" | "bot" | "accent" }[] = []; let thinking = false, lastThink = 0;
@@ -380,7 +380,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       if (o.layout === "sectors" && !on) continue;
       if (hover && !on && (hover.kind === "msg" || hover.kind === "hub")) continue;
       const pa = toScreen(a.x, a.y), pb = toScreen(b.x, b.y), mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
-      ctx.strokeStyle = on ? pal.text : pal.muted; const nl = neu(a), sem = lk.includes("sense"), cht = !sem && lk.includes("chat"); if (sem) { ctx.setLineDash([2, 4]); if (!on) ctx.strokeStyle = pal.hubs[2]!; } else if (cht) { ctx.setLineDash([1, 4]); if (!on) ctx.strokeStyle = pal.hubs[1]!; } ctx.globalAlpha = (on ? 0.9 : nl ? 0.24 : 0.16) * Math.min(1, 0.5 + l.w * 0.25); ctx.lineWidth = (on ? 1.4 : 1) + (nl ? Math.min(2.2, (l.w - 1) * 0.7) : 0);
+      ctx.strokeStyle = on ? pal.text : pal.muted; const nl = neu(a), sem = lk.includes("sense"), ent = !sem && lk.includes("entity"), cht = !sem && !ent && lk.includes("chat"); if (ent) { ctx.setLineDash([6, 3]); if (!on) ctx.strokeStyle = pal.hubs[3] ?? pal.hubs[0]!; } else if (sem) { ctx.setLineDash([2, 4]); if (!on) ctx.strokeStyle = pal.hubs[2]!; } else if (cht) { ctx.setLineDash([1, 4]); if (!on) ctx.strokeStyle = pal.hubs[1]!; } ctx.globalAlpha = (on ? 0.9 : nl ? 0.24 : 0.16) * Math.min(1, 0.5 + l.w * 0.25); ctx.lineWidth = (on ? 1.4 : 1) + (nl ? Math.min(2.2, (l.w - 1) * 0.7) : 0);
       ctx.beginPath(); ctx.moveTo(pa.x, pa.y); const bend = nl ? 0.12 : 0.35; ctx.quadraticCurveTo(mx + (c0.x - mx) * bend, my + (c0.y - my) * bend, pb.x, pb.y); ctx.stroke(); ctx.setLineDash([]);
     }
     ctx.globalAlpha = 1;

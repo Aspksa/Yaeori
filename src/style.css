@@ -257,6 +257,7 @@ button.pill{border:0;font:inherit;font-size:var(--fs-sm);font-weight:600;cursor:
 .ls-k{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--line);border-radius:999px;background:var(--surface);font:inherit;font-size:var(--fs-xs);cursor:pointer;color:var(--fg)}
 .ls-k[aria-pressed=false]{opacity:.45}.ls-k i,.ls-kk i{display:inline-block;width:14px;height:0;border-top:2px solid var(--muted)}
 .ls-k.sense i,.ls-kk i.sense{border-top:2px dotted var(--violet,#a78bfa)}.ls-k.chat i,.ls-kk i.chat{border-top:2px dotted var(--warn,#f0a030)}
+.ls-k.entity i,.ls-kk i.entity{border-top:2px dashed var(--accent,#e0a030)}.ls-ent p{margin:2px 0 2px 26px;font-size:var(--fs-xs);color:var(--muted)}.ls-ent p em{font-style:normal;color:var(--fg)}.ls-ent p.past{opacity:.6;text-decoration:line-through}.ls-sub{padding-left:26px}
 .ls-kk{display:flex;gap:4px;margin-bottom:2px}.ls-link{align-items:start}
 /* Правка и закрепление */
 .ls-acts{position:absolute;right:4px;top:5px;display:flex;gap:1px;opacity:0;transition:opacity .15s}

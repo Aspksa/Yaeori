@@ -38,7 +38,8 @@ export function createApp({ root, db, dist = null }) {
   // ——— Память: модель сама выделяет факты из беседы; они становятся нейронами «мозга» ———
   const LEARN = "Ты помогаешь ассистенту запоминать важное о собеседнике. Из реплик выдели устойчивые факты о пользователе и его делах: люди, работа, техника, места, планы, предпочтения, договорённости. "
     + "Не запоминай пароли, ключи, номера карт и документов, здоровье и случайные мелочи. Верни ТОЛЬКО JSON-массив до {N} объектов вида "
-    + '{"text":"факт одним предложением","topics":["тема"],"kind":"fact"}. kind: "fact" — факт, "note" — идея или план. topics — 1–3 общие темы по 1–2 слова в нижнем регистре (например: работа, техника, семья, планы). ';
+    + '{"text":"факт одним предложением","topics":["тема"],"kind":"fact"}. kind: "fact" — факт, "note" — идея или план. topics — 1–3 общие темы по 1–2 слова в нижнем регистре (например: работа, техника, семья, планы). '
+    + 'Можно добавить поля: "entities":["Имя","Место"] — до 4 людей, мест, организаций и техники, названных в факте (как в тексте); "rel":{"s":"кто","r":"отношение в 1–2 слова","o":"с кем или чем"} — если факт связывает две сущности; "from" и "until" в виде "ГГГГ-ММ" — если названо, с какого и до какого времени факт верен. ';
   const askModel = async (s, model, system, user, maxTokens = 500) => {
     const r = await fetch(s.baseUrl + "/chat/completions", { method: "POST", redirect: "error", signal: AbortSignal.timeout(40000),
       headers: { authorization: `Bearer ${s.key}`, "content-type": "application/json" },
@@ -117,7 +118,7 @@ export function createApp({ root, db, dist = null }) {
   }
   const memoryNote = (mem) => {
     if (!mem.length) return "";
-    return "\n\nТы помнишь о собеседнике из прошлых бесед (используй естественно, не пересказывай список):\n" + mem.map((m) => "- " + m.text).join("\n");
+    return "\n\nТы помнишь о собеседнике из прошлых бесед (используй естественно, не пересказывай список):\n" + mem.map((m) => "- " + m.text + (m.past ? ` (было раньше${m.validTo ? ", до " + m.validTo : ""}, сейчас уже не так)` : "")).join("\n");
   };
 
   /** Ответ модели идёт построчно (NDJSON): {"delta":"…"} … {"done":true} или {"error":"…"}. */
@@ -132,8 +133,8 @@ export function createApp({ root, db, dist = null }) {
     if (!s.model) { send(other("NO_MODEL")); return res.end(); }
     const ctrl = new AbortController();
     res.on("close", () => ctrl.abort());
-    const sum = db.getSummary(id), history = (sum ? db.messagesAfter(id, sum.upto, 24) : db.recent(id, 20)).map((m) => ({ role: m.role, content: m.content })), mem = s.memory !== false ? db.recall(text, 12, await embed(s, [text], 6000).then((v) => v[0]).catch(() => null)) : [], system = SYSTEM + memoryNote(mem) + (sum ? "\n\nКратко о том, что было раньше в этой беседе: " + sum.text : "");
-    if (mem.length) send({ recalled: mem.map((m) => ({ id: m.id, text: m.text, hop: Boolean(m.hop) })) });
+    const sum = db.getSummary(id), history = (sum ? db.messagesAfter(id, sum.upto, 24) : db.recent(id, 20)).map((m) => ({ role: m.role, content: m.content })), mem = s.memory !== false ? db.recall(text, 12, await embed(s, [text], 6000).then((v) => v[0]).catch(() => null), id) : [], system = SYSTEM + memoryNote(mem) + (sum ? "\n\nКратко о том, что было раньше в этой беседе: " + sum.text : "");
+    if (mem.length) send({ recalled: mem.map((m) => ({ id: m.id, text: m.text, hop: Boolean(m.hop), session: Boolean(m.session), past: Boolean(m.past) })) });
     const order = [s.model, ...(s.fallbackModel && s.fallbackModel !== s.model ? [s.fallbackModel] : [])];
     let lastErr = null;
     for (let mi = 0; mi < order.length; mi++) {
@@ -268,6 +269,7 @@ export function createApp({ root, db, dist = null }) {
       const r = db.mergeMemories(Number(b.keep), (Array.isArray(b.drop) ? b.drop : []).map(Number), b.history === true); if (!r) return json(res, 404, { error: "Нечего объединять" });
       setTimeout(() => void tick(), 300); return json(res, 200, r);
     }
+    if (pathname === "/api/entities" && req.method === "GET") return json(res, 200, { items: db.entityList() });
     if (pathname === "/api/memories/inactive" && req.method === "GET") return json(res, 200, { items: db.inactive() });
     if (pathname === "/api/memories/compress" && req.method === "POST") {
       let b; try { b = await body(req); } catch { return json(res, 400, { error: "Некорректный запрос" }); }
