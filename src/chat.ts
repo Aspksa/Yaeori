@@ -12,8 +12,8 @@ export function renderText(src: string): string {
   }).join("");
 }
 
-const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v1";
-const LAYOUTS: [Layout, string][] = [["rings", "Кольца"], ["circle", "Круг"], ["hex", "Соты"], ["tile", "Плита"], ["hud", "HUD"], ["force", "Сила"]];
+const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v3";
+const LAYOUTS: [Layout, string][] = [["sectors", "Сектора"], ["rings", "Кольца"], ["circle", "Круг"], ["hex", "Соты"], ["tile", "Плита"], ["hud", "HUD"], ["force", "Сила"]];
 const num = (v: unknown, lo: number, hi: number, d: number) => (typeof v === "number" && v >= lo && v <= hi ? v : d);
 function loadMap(): MapOptions {
   try {
@@ -69,7 +69,7 @@ export function mountHome(): () => void {
   let chats: ChatInfo[] = [], current = 0, busy = false, ctrl: AbortController | null = null, dead = false;
   let map = loadMap();
   const graph: GraphHandle = mountGraph($<HTMLCanvasElement>("graph"), $("graph-tip"), { onPick: (id) => void open(id), onCollapse: (ids) => { map = { ...map, collapsed: ids }; saveMap(map); },
-    onSystem: (id) => { if (id === "key" || id === "model" || id === "db") window.dispatchEvent(new CustomEvent("yaeori:goto", { detail: { page: "settings", section: id === "key" ? "conn" : id === "model" ? "model" : "memory" } })); else if (id === "palette") { panel.hidden = false; $("viz-toggle").setAttribute("aria-expanded", "true"); } },
+    onSystem: (id) => { if (id.startsWith("chat:")) { void open(Number(id.slice(5))); graph.focus("chat:" + id.slice(5)); return; } if (id === "key" || id === "model" || id === "db") window.dispatchEvent(new CustomEvent("yaeori:goto", { detail: { page: "settings", section: id === "key" ? "conn" : id === "model" ? "model" : "memory" } })); else if (id === "palette") { panel.hidden = false; $("viz-toggle").setAttribute("aria-expanded", "true"); } },
     onShowEnd: () => { $("viz-show").setAttribute("aria-pressed", "false"); $("viz-show").textContent = "▷ Показ"; } }, map);
   const panel = $("viz-panel");
   let lastBrain: GraphData | null = null;
@@ -119,7 +119,7 @@ export function mountHome(): () => void {
   };
   const hello = () => { thread.innerHTML = ""; bubble("assistant", "Здравствуйте! Я Yaeori. О чём поговорим?"); };
 
-  $("viz-legend").innerHTML = `<i class="dot you"></i> свежая <i class="dot long"></i> долгая <i class="dot fade"></i> забывается <i class="dot bot sq"></i> беседа <span class="viz-hint">колесо — масштаб · перетаскивание — сдвиг</span>`;
+  $("viz-legend").innerHTML = `<span>цвет — тема</span><span><i class="dot you"></i> свежая</span><span><i class="dot long"></i> долгая</span><span><i class="dot fade"></i> забывается</span><span><i class="dot bot sq"></i> беседа</span>`;
   $("lb-gchat").textContent = "По темам и чатам"; $("lb-gday").textContent = "По дням"; $("lb-links").textContent = "Связи между воспоминаниями";
   const mergeMap = (b: GraphData, c: GraphData): GraphData => ({
     stats: b.stats,
@@ -144,7 +144,8 @@ export function mountHome(): () => void {
         { id: "model", label: "Модель", detail: c?.model || "не выбрана", ok: !!c?.model, icon: "spark" },
         { id: "db", label: "Память", detail: c?.memory === false ? "выключена" : `${nn} воспомин., ${chatMsgs} сообщ.`, ok: c?.memory !== false, icon: "db" },
         { id: "chats", label: "Чаты", detail: String(chats.length), ok: true, icon: "chat" },
-        { id: "palette", label: "Тема карты", detail: theme, ok: true, icon: "palette" }];
+        { id: "palette", label: "Тема карты", detail: theme, ok: true, icon: "palette" },
+        ...chats.slice(0, 60).map((x): SysItem => ({ id: "chat:" + x.id, label: x.title, detail: `${x.count} сообщ.`, ok: true, icon: "chat", group: "chat", chatId: x.id, on: x.id === current }))];
       graph.setSystem(sys);
     } catch { /* карта необязательна */ }
   }

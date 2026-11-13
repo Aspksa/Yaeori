@@ -1,21 +1,23 @@
 import type { GraphData } from "./api";
 
-export type Layout = "rings" | "circle" | "hex" | "tile" | "hud" | "force";
-export type MapTheme = "accent" | "ocean" | "neon" | "bordo" | "paper";
+export type Layout = "sectors" | "rings" | "circle" | "hex" | "tile" | "hud" | "force";
+export type MapTheme = "accent" | "night" | "ocean" | "neon" | "bordo" | "paper";
 export type Grouping = "chat" | "day";
 export interface MapOptions { layout: Layout; theme: MapTheme; group: Grouping; rotation: number; force: number; size: number; labels: boolean; links: boolean; collapsed: string[] }
-export const DEFAULT_MAP: MapOptions = { layout: "rings", theme: "accent", group: "chat", rotation: 0.25, force: 0.5, size: 1, labels: false, links: true, collapsed: [] };
+export const DEFAULT_MAP: MapOptions = { layout: "sectors", theme: "night", group: "chat", rotation: 0.25, force: 0.5, size: 1, labels: false, links: true, collapsed: [] };
 export const MAP_THEMES: { id: MapTheme; label: string; swatch: string[] }[] = [
   { id: "accent", label: "По акценту", swatch: ["#d9a441", "#a78bfa", "#6fcf97", "#f0a030"] },
+  { id: "night", label: "Ночь (как на примере)", swatch: ["#4fd1b0", "#f0a24a", "#8b7cf6", "#5aa0ff"] },
   { id: "ocean", label: "Океан", swatch: ["#4cc9a4", "#4aa8e8", "#7c9cff", "#e6c35c"] },
   { id: "neon", label: "Неон", swatch: ["#d6ff3d", "#ff3dac", "#3dffe0", "#ffb13d"] },
   { id: "bordo", label: "Бордо", swatch: ["#f0a35c", "#e05a6b", "#d9c27a", "#c97bb0"] },
   { id: "paper", label: "Бумага", swatch: ["#8a5a1c", "#2f6f8f", "#6b3fa0", "#2f7f4f"] },
 ];
-export interface SysItem { id: string; label: string; detail: string; ok: boolean; icon: "key" | "spark" | "db" | "chat" | "palette" }
+export interface SysItem { id: string; label: string; detail: string; ok: boolean; icon: "key" | "spark" | "db" | "chat" | "palette"; group?: "chat"; chatId?: number; on?: boolean }
 
 interface Pal { bg: string; hubs: string[]; user: string; bot: string; line: string; text: string; muted: string; warn: string }
 const FIXED: Record<Exclude<MapTheme, "accent">, Pal> = {
+  night: { bg: "#07121d", hubs: ["#4fd1b0", "#f0a24a", "#8b7cf6", "#5aa0ff", "#7fe0c8", "#e8836a", "#b9a8ff", "#93c5fd"], user: "#4fd1b0", bot: "#8b7cf6", line: "rgba(110,190,200,.20)", text: "#d6ece8", muted: "#6f93a0", warn: "#f0a24a" },
   ocean: { bg: "#0b1822", hubs: ["#4cc9a4", "#4aa8e8", "#7c9cff", "#e6c35c", "#f08c6a", "#b48cf0"], user: "#4cc9a4", bot: "#4aa8e8", line: "rgba(120,200,220,.22)", text: "#d4f1ea", muted: "#7fa9b3", warn: "#e6c35c" },
   neon: { bg: "#05050a", hubs: ["#d6ff3d", "#ff3dac", "#3dffe0", "#ffb13d", "#a35bff", "#3d8bff"], user: "#d6ff3d", bot: "#ff3dac", line: "rgba(255,255,255,.16)", text: "#f2f2f2", muted: "#9a9aa8", warn: "#ffb13d" },
   bordo: { bg: "#160a0c", hubs: ["#f0a35c", "#e05a6b", "#d9c27a", "#c97bb0", "#e8855c", "#a8c6a0"], user: "#f0a35c", bot: "#e05a6b", line: "rgba(255,170,150,.18)", text: "#f6e2db", muted: "#b38d86", warn: "#d9c27a" },
@@ -138,18 +140,57 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   }
 
   const msgsOf = (grp: string) => order.filter((n) => n.kind === "msg" && n.grp === grp);
-  const radius = (n: N) => n.kind === "msg" && neu(n) ? (4.2 + Math.min(n.hits ?? 1, 12) * 0.75) * o.size * (n.key2 ? 1.2 : 1) : n.kind === "core" ? 26 : n.kind === "sys" ? 14 : n.kind === "hub" ? (8 + Math.sqrt(n.size) * 0.9) * o.size : (n.key2 ? 4.6 : 2.7 + Math.min(Math.log10(n.size + 1), 3) * 0.5) * o.size;
+  const radius = (n: N) => o.layout === "sectors" && n.kind === "msg" ? (neu(n) ? 1.5 + Math.min(n.hits ?? 1, 10) * 0.12 : 1.5) * dotK * o.size * (n.key2 ? 1.7 : 1) : o.layout === "sectors" && n.kind === "hub" ? 3 * dotK * o.size : n.kind === "msg" && neu(n) ? (4.2 + Math.min(n.hits ?? 1, 12) * 0.75) * o.size * (n.key2 ? 1.2 : 1) : n.kind === "core" ? 26 : n.kind === "sys" ? (n.sys?.group === "chat" ? 8.5 : 14) : n.kind === "hub" ? (8 + Math.sqrt(n.size) * 0.9) * o.size : (n.key2 ? 4.6 : 2.7 + Math.min(Math.log10(n.size + 1), 3) * 0.5) * o.size;
 
-  let sectors: { a0: number; a1: number; hue: number }[] = [];
-  function targets() {
+  let sectors: { a0: number; a1: number; hue: number }[] = [], slots: { x: number; y: number; hue: number }[] = [], dotK = 1;
+  function targets() { layoutTargets(); if (o.layout !== "force") placeChips(); }
+  function placeChips() {
+    const chips = order.filter((n) => n.kind === "sys" && n.sys?.group === "chat"); if (!chips.length) return;
+    const best = new Map<number, Map<number, number>>();
+    for (const m of data.messages) if (m.src && m.tier !== undefined) { const c = best.get(m.src) ?? new Map<number, number>(); c.set(m.chatId, (c.get(m.chatId) ?? 0) + 1); best.set(m.src, c); }
+    const byHub = new Map<string, N[]>();
+    for (const ch of chips) {
+      const cid = ch.sys!.chatId ?? 0, c = best.get(cid); let key = "hc" + cid, top = 0;
+      if (c) for (const [a, k] of c) if (k > top && nodes.has("hc" + a)) { top = k; key = "hc" + a; }
+      if (!nodes.has(key)) key = order.find((n) => n.kind === "hub")?.key ?? "";
+      ch.grp = key; (byHub.get(key) ?? byHub.set(key, []).get(key)!).push(ch);
+    }
+    const pitch = 21, per = 7;
+    for (const [key, list] of byHub) {
+      const hb = nodes.get(key), base = hb ? Math.atan2(hb.ty, hb.tx) : 1.5708;
+      list.forEach((ch, i) => { const row = Math.floor(i / per), col = i % per, n = Math.min(per, list.length - row * per), rr = R * 1.2 + row * pitch, aa = base + (col - (n - 1) / 2) * (pitch / rr) * (row % 2 ? 1 : 1); ch.tx = Math.cos(aa) * rr; ch.ty = Math.sin(aa) * rr; });
+    }
+  }
+  function layoutTargets() {
     const hubs = order.filter((n) => n.kind === "hub"), collapsed = new Set(o.collapsed);
     for (const n of order) n.visible = n.kind !== "msg" || !collapsed.has("h" + n.grp);
-    const sys = order.filter((n) => n.kind === "sys");
+    const allSys = order.filter((n) => n.kind === "sys"), sys = allSys.filter((n) => n.sys?.group !== "chat"), chips = allSys.filter((n) => n.sys?.group === "chat");
+    if (o.layout === "force") chips.forEach((sn, i) => { const a = (i / Math.max(chips.length, 1)) * TAU + rot, rr = R * 1.22; sn.tx = Math.cos(a) * rr; sn.ty = Math.sin(a) * rr; sn.x = sn.tx; sn.y = sn.ty; });
     sys.forEach((sn, i) => { const a = (i / Math.max(sys.length, 1)) * TAU - 1.5708 - rot * 0.6, rr = R * 1.08; sn.tx = Math.cos(a) * rr; sn.ty = Math.sin(a) * rr; if (o.layout === "force") { sn.x = sn.tx; sn.y = sn.ty; } });
     if (o.layout === "force") return;
     const core = nodes.get("core")!;
-    if (o.layout === "rings") {
-      const tot = order.filter((n) => n.kind === "msg" && n.visible).length, g = (order.some(neu) ? Math.max(11, 24 - tot * 0.12) : 8.5 + 8 * Math.max(0, 1 - tot / 250)) * o.size, r0 = R * 0.3, wts = hubs.map((hb) => Math.pow(Math.max(msgsOf(hb.grp).length, 3), 0.6)), wsum = wts.reduce((x, y) => x + y, 0) || 1;
+    if (o.layout === "sectors") {
+      core.tx = 0; core.ty = 0; slots = [];
+      // клин на тему: шаг сетки одинаков, ширина — по числу воспоминаний, глубина — сколько нужно
+      const items = hubs.map((hb) => { const off = collapsed.has(hb.key), ms = off ? [] : msgsOf(hb.grp).sort((x, y) => Date.parse(x.at) - Date.parse(y.at)); return { hb, ms, cap: off ? 0 : Math.max(12, Math.ceil((ms.length * 1.4) / 4) * 4 + 4) }; });
+      const wts = items.map((i) => Math.pow(i.cap, 0.72)), wsum = wts.reduce((t, x) => t + x, 0) || 1, gapA = 0.13, usable = TAU - gapA * items.length, rin = R * 0.46, rout = R * 0.92;
+      const spans = wts.map((x) => (usable * x) / wsum);
+      const colsOf = (span: number, g: number) => Math.max(1, Math.floor((span * rin) / g)), depth = (g: number) => items.reduce((mx, it, i) => Math.max(mx, rin + Math.ceil(it.cap / colsOf(spans[i]!, g)) * g), 0);
+      let g = 6; for (const c of [30, 26, 22, 19, 16, 14, 12, 10, 9, 8, 7]) if (depth(c) <= rout) { g = c; break; }
+      dotK = Math.max(1, Math.min(2.8, g / 9));
+      let at = -1.5708 + rot;
+      items.forEach((it, i) => {
+        const a0 = at + gapA / 2, a1 = a0 + spans[i]!; at += spans[i]! + gapA;
+        let r = rin, k = 0, last = rin; const cols = colsOf(spans[i]!, g);
+        while (k < it.cap) {
+          const n = Math.min(cols, it.cap - k);
+          for (let c = 0; c < n; c++) { const aa = a0 + ((c + 0.5) / cols) * (a1 - a0), x = Math.cos(aa) * r, y = Math.sin(aa) * r, m = it.ms[k + c]; if (m) { m.tx = x; m.ty = y; } else slots.push({ x, y, hue: it.hb.hue }); }
+          k += n; last = r; r += g;
+        }
+        const mid = (a0 + a1) / 2, hr = Math.min(last + 14 + 4 * dotK, R * 1.0); it.hb.tx = Math.cos(mid) * hr; it.hb.ty = Math.sin(mid) * hr;
+      });
+    } else if (o.layout === "rings") {
+      const tot = order.filter((n) => n.kind === "msg" && n.visible).length, g = (order.some(neu) ? Math.max(11, 24 - tot * 0.12) : 8.5 + 8 * Math.max(0, 1 - tot / 250)) * o.size, r0 = R * (0.3 + 0.2 * Math.max(0, 1 - tot / 120)), wts = hubs.map((hb) => Math.pow(Math.max(msgsOf(hb.grp).length, 3), 0.6)), wsum = wts.reduce((x, y) => x + y, 0) || 1;
       let at = 0;
       hubs.forEach((hb, i) => {
         const share = (wts[i]! / wsum) * TAU, a0 = at - 1.5708 + rot; at += share;
@@ -258,6 +299,11 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     ctx.strokeStyle = pal.line; ctx.lineWidth = 1;
     for (const rr of [R * 0.28, R * 0.58, R * 0.85, R * 1.08]) { ctx.globalAlpha = rr === R * 1.08 ? 0.9 : 0.55; ctx.beginPath(); ctx.arc(c0.x, c0.y, rr * cam.k, 0, TAU); ctx.stroke(); }
     ctx.globalAlpha = 1;
+    if (o.layout === "sectors") { // свободные ячейки секторов: растут и заполняются
+      const sr = Math.max(0.9, 1.35 * dotK * cam.k);
+      for (const sl of slots) { const q = toScreen(sl.x, sl.y); ctx.fillStyle = pal.hubs[sl.hue % pal.hubs.length]!; ctx.globalAlpha = 0.17; ctx.beginPath(); ctx.arc(q.x, q.y, sr, 0, TAU); ctx.fill(); }
+      ctx.globalAlpha = 1;
+    }
     // соты-ячейки
     if (o.layout === "hex") {
       const s = 105;
@@ -313,6 +359,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       if (m.kind !== "msg" || !m.visible) continue;
       const hb = byKey.get("h" + m.grp); if (!hb) continue;
       const a = toScreen(hb.x, hb.y), b = toScreen(m.x, m.y), on = hb.chatId === selected || hl === m.grp;
+      if (o.layout === "sectors" && !on) continue;
       const g = ctx.createLinearGradient(a.x, a.y, b.x, b.y); g.addColorStop(0, on ? hue(hb) : pal.line); g.addColorStop(1, "transparent");
       ctx.strokeStyle = g; ctx.globalAlpha = (on ? 0.8 : 0.5) * dimOf(m); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     }
@@ -327,6 +374,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     if (o.links) for (const l of data.links) {
       const a = byKey.get("m" + l.a), b = byKey.get("m" + l.b); if (!a || !b || !a.visible || !b.visible) continue;
       const on = hover && (hover.key === a.key || hover.key === b.key || (hover.kind === "hub" && (a.chatId === hover.chatId || b.chatId === hover.chatId)));
+      if (o.layout === "sectors" && !on) continue;
       if (hover && !on && (hover.kind === "msg" || hover.kind === "hub")) continue;
       const pa = toScreen(a.x, a.y), pb = toScreen(b.x, b.y), mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
       ctx.strokeStyle = on ? pal.text : pal.muted; const nl = neu(a); ctx.globalAlpha = (on ? 0.9 : nl ? 0.24 : 0.16) * Math.min(1, 0.5 + l.w * 0.25); ctx.lineWidth = (on ? 1.4 : 1) + (nl ? Math.min(2.2, (l.w - 1) * 0.7) : 0);
@@ -348,19 +396,20 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       const age = n.born ? (now - n.born) / 900 : 1;
       if (age < 1) { ctx.globalAlpha = 1 - age; ctx.strokeStyle = pal.user; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, r + age * 24, 0, TAU); ctx.stroke(); }
       if (n.kind === "sys") {
-        const s = n.sys!, col = s.ok ? pal.hubs[0]! : pal.warn;
+        const s = n.sys!, hb0 = s.group === "chat" ? nodes.get(n.grp) : null, col = hb0 ? hue(hb0) : s.ok ? pal.hubs[0]! : pal.warn;
+        if (hb0 && hb0.visible) { const q = toScreen(hb0.x, hb0.y); ctx.strokeStyle = col; ctx.globalAlpha = s.on || n === hover ? 0.7 : 0.12; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(q.x, q.y); ctx.lineTo(p.x, p.y); ctx.stroke(); }
         ctx.globalAlpha = dim; ctx.fillStyle = pal.bg; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill();
-        ctx.strokeStyle = col; ctx.lineWidth = n === hover ? 2.2 : 1.4; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.stroke();
+        ctx.strokeStyle = col; ctx.lineWidth = n === hover || n.sys!.on ? 2.4 : 1.4; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.stroke();
         ctx.save(); ctx.translate(p.x - r * 0.55, p.y - r * 0.55); ctx.scale((r * 1.1) / 24, (r * 1.1) / 24); ctx.strokeStyle = col; ctx.lineWidth = 2 / ((r * 1.1) / 24) * 0.9; ctx.stroke(PATHS[s.icon]); ctx.restore();
         ctx.globalAlpha = 1; continue;
       }
       const fade = n.tier === "fading" ? 0.45 : 1;
-      ctx.globalAlpha = dim * fade; ctx.fillStyle = n.kind === "hub" ? hue(n) : neu(n) ? (n.tier === "fresh" ? pal.user : n.tier === "long" ? hue(n) : n.tier === "fading" ? pal.muted : pal.bot) : n.role === "user" ? pal.user : pal.bot;
-      if (n.kind === "msg" && !n.key2) { const tw = still ? 1 : 0.88 + Math.sin(now * 0.002 + n.id * 1.7) * 0.12; ctx.globalAlpha = dim * fade * tw; ctx.fillRect(p.x - r * 0.8, p.y - r * 0.8, r * 1.6, r * 1.6); }
+      ctx.globalAlpha = dim * fade; ctx.fillStyle = n.kind === "hub" ? hue(n) : n.tier === "fading" ? pal.muted : hue(n);
+      if (n.kind === "msg" && !n.key2 && o.layout !== "sectors") { const tw = still ? 1 : 0.88 + Math.sin(now * 0.002 + n.id * 1.7) * 0.12; ctx.globalAlpha = dim * fade * tw; ctx.fillRect(p.x - r * 0.8, p.y - r * 0.8, r * 1.6, r * 1.6); }
       else if (n.kind === "hub" && !isArea(n)) { ctx.beginPath(); ctx.roundRect(p.x - r, p.y - r, r * 2, r * 2, r * 0.35); ctx.fill(); }
       else { ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill(); }
       // свечение у ключевых, выбранных, найденных и наведённых
-      if (n.kind === "hub" || n === hover || (n.kind === "msg" && n.key2 && (neu(n) || n.chatId === selected)) || n.tier === "fresh" || (query && hit)) {
+      if (n.kind === "hub" || n === hover || (n.kind === "msg" && n.key2 && (o.layout !== "sectors" && neu(n) || n.chatId === selected)) || (n.tier === "fresh" && o.layout !== "sectors") || (query && hit)) {
         ctx.globalAlpha = n === hover ? 0.55 : 0.28; ctx.strokeStyle = n.kind === "hub" ? hue(n) : (query && hit) ? pal.text : ctx.fillStyle as string; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(p.x, p.y, r + 4 + (still ? 0 : Math.sin(now * 0.003) * 1.2), 0, TAU); ctx.stroke();
         if (n === hover) { ctx.globalAlpha = 0.25; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(p.x, p.y, r + 9, 0, TAU); ctx.stroke(); }
       }
