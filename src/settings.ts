@@ -1,5 +1,5 @@
 import { ACCENTS, swatchColor, type AccentId, type Theme } from "./accents";
-import { checkConn, getConn, getGuide, saveConn, testModel, type Conn, type Explained, type Guide, type TestResult } from "./api";
+import { checkConn, forgetAll, forgetMemory, getConn, getGuide, getMemories, saveConn, scanMemories, testModel, type Conn, type Explained, type Guide, type MemoryList, type TestResult } from "./api";
 import { DEFAULT_PREFS, clean, type Density, type Prefs, type Radius, type TextSize } from "./prefs";
 import pkg from "../package.json";
 
@@ -9,6 +9,7 @@ interface Section { id: string; title: string; lead: string; keywords: string }
 export const SECTIONS: Section[] = [
   { id: "conn", title: "Подключение", lead: "Ключ Cloud.ru хранится только на этом компьютере.", keywords: "ключ api cloud.ru соединение подключить адрес" },
   { id: "model", title: "Модель", lead: "Основная и запасная модель нейросети.", keywords: "модель запасная нейросеть" },
+  { id: "memory", title: "Память", lead: "Что Yaeori запоминает из бесед и показывает в мозге.", keywords: "память мозг факты забыть запоминать нейроны" },
   { id: "look", title: "Внешний вид", lead: "Тема, акцент, размер текста, плотность и скругления.", keywords: "тема тёмная светлая цвет акцент скругление размер текста плотность шрифт" },
   { id: "data", title: "Данные", lead: "Резервная копия и сброс настроек.", keywords: "экспорт импорт резервная копия сброс по умолчанию удалить" },
   { id: "about", title: "О программе", lead: "Версия и горячие клавиши.", keywords: "версия горячие клавиши сочетания" },
@@ -27,6 +28,7 @@ const seg = <T extends string>(name: string, label: string, opts: [T, string][],
 // Черновики полей переживают перерисовку, пока их не сохранили.
 const drafts = new Map<string, string>();
 let conn: Conn | null = null, connError = "", status = "", models: string[] = [], busy = false;
+let mem: MemoryList | null = null, memStatus = "";
 let mq = "", problem: Explained | null = null, guide: Guide | null = null, autoChecked = false, listing = false;
 const tests: Record<string, TestResult | "wait"> = {};
 
@@ -87,6 +89,16 @@ async function loadModels(ctx: Ctx | null, silent: boolean) {
   try { const r = await checkConn(); if (r.ok) { models = r.models ?? []; problem = null; } else problem = r; if (!silent && r.ok) status = ""; } catch (e) { problem = { error: (e as Error).message }; }
   listing = false; refreshModels(); if (ctx && !document.getElementById("model-top")) ctx.rerender();
 }
+function memoryBody() {
+  if (!conn) return `<p class="muted">Загрузка…</p>`;
+  const items = (mem?.items ?? []).map((m) => `<div class="mem-item"><div>${esc(m.text)}<small>${m.topics.map(esc).join(", ")} · подтверждено ×${m.hits}</small></div><button class="btn small" data-mem-del="${m.id}" aria-label="Забыть: ${esc(m.text)}">Забыть</button></div>`).join("");
+  return `<label class="viz-check"><input type="checkbox" id="set-memory" ${conn.memory ? "checked" : ""}> Запоминать факты из бесед</label>
+    <p class="muted">Факты хранятся только на этом компьютере. Чтобы их выделять и учитывать в ответах, они отправляются в модель Cloud.ru вместе с беседой. Модели велено не запоминать пароли, ключи, номера карт и документов.</p>
+    <div class="row"><button class="btn" data-act="scan"${busy || !conn.keySet || !conn.model ? " disabled" : ""}>Вспомнить из бесед</button>
+      <button class="btn danger" data-act="forget-all"${mem?.total ? "" : " disabled"}>Забыть всё</button>
+      <span class="muted" role="status">${esc(memStatus)}${mem ? ` Воспоминаний: ${mem.total}` : ""}</span></div>
+    ${items ? `<div class="mem-list">${items}</div>` : `<p class="muted">Пока ничего не запомнено.</p>`}`;
+}
 function lookBody(p: Prefs) {
   const themes = THEMES.map(([id, l, h]) => `<button class="theme-card" role="radio" aria-checked="${p.theme === id}" data-theme-id="${id}"><strong>${l}</strong><small>${h}</small></button>`).join("");
   const sw = ACCENTS.map((a) => `<button class="swatch" role="radio" aria-checked="${p.accent === a.id}" aria-label="${esc(a.label)}" title="${esc(a.label)}" data-accent="${a.id}" style="background:${swatchColor(a)}"></button>`).join("");
@@ -104,7 +116,7 @@ const aboutBody = () => `${errorsHtml()}<div class="set-row"><strong>Верси�
   <div class="set-row"><strong>Горячие клавиши</strong><ul class="keys"><li><kbd>Alt</kbd>+<kbd>1</kbd> Главная</li><li><kbd>Alt</kbd>+<kbd>2</kbd> Настройки</li><li><kbd>/</kbd> поиск по настройкам</li></ul></div>`;
 
 export function settingsView(p: Prefs) {
-  const body: Record<string, string> = { conn: connBody(), model: modelBody(), look: lookBody(p), data: dataBody(), about: aboutBody() };
+  const body: Record<string, string> = { conn: connBody(), model: modelBody(), memory: memoryBody(), look: lookBody(p), data: dataBody(), about: aboutBody() };
   const toc = SECTIONS.map((s) => `<button class="chip" data-toc="${s.id}">${esc(s.title)}</button>`).join("");
   return `<header class="pg-head"><h1>Настройки</h1><p class="muted">Внешний вид сохраняется в браузере, ключ — на этом компьютере.</p></header>
     <div class="set-tools"><input id="set-search" type="search" placeholder="Найти настройку…  ( / )" autocomplete="off" spellcheck="false" aria-label="Поиск по настройкам" />
@@ -116,10 +128,12 @@ export function settingsView(p: Prefs) {
 export function loadConn(ctx: Ctx) {
   getConn().then((c) => { conn = c; connError = ""; }, (e: Error) => { connError = "Не удалось связаться с сервером: " + e.message; }).finally(() => {
     ctx.rerender();
+    loadMem(ctx);
     if (!guide) getGuide().then((g) => { guide = g; ctx.rerender(); }, () => {});
     if (conn?.keySet && !autoChecked) { autoChecked = true; void loadModels(ctx, true); }
   });
 }
+const loadMem = (ctx: Ctx) => { getMemories().then((m) => { mem = m; }, () => {}).finally(ctx.rerender); };
 const filter = (q: string) => {
   const needle = q.trim().toLowerCase(); let n = 0;
   document.querySelectorAll<HTMLElement>(".set-card").forEach((c) => { const hit = !needle || c.dataset.search!.includes(needle); c.hidden = !hit; if (hit) n++; });
@@ -147,6 +161,7 @@ export function bindSettings(ctx: Ctx) {
   document.addEventListener("change", (e) => {
     const t = e.target as HTMLInputElement;
     if (t.dataset.custom !== undefined) ctx.rerender();
+    if (t.id === "set-memory") { saveConn({ memory: t.checked }).then((c) => { conn = c; }, () => {}).finally(ctx.rerender); return; }
     if (t.id === "set-model" || t.id === "set-fb") { // сохраняется сразу, без отдельной кнопки
       saveConn(t.id === "set-model" ? { model: t.value } : { fallbackModel: t.value }).then((c) => { conn = c; drafts.delete("set-model"); status = ""; }, (e: Error) => { status = e.message; }).finally(refreshModels);
     }
@@ -159,9 +174,10 @@ export function bindSettings(ctx: Ctx) {
     if (e.key === "/" && location.hash === "#settings" && !/INPUT|TEXTAREA|SELECT/.test(t.tagName)) { e.preventDefault(); document.getElementById("set-search")?.focus(); }
   });
   document.addEventListener("click", (e) => {
-    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-seg],[data-theme-id],[data-accent],[data-collapse],[data-toc],[data-reset],[data-act],[data-pick]");
+    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-seg],[data-theme-id],[data-accent],[data-collapse],[data-toc],[data-reset],[data-act],[data-pick],[data-mem-del]");
     if (!t) return;
     const p = ctx.prefs();
+    if (t.dataset.memDel) { forgetMemory(Number(t.dataset.memDel)).then(() => getMemories()).then((m) => { mem = m; }, () => {}).finally(ctx.rerender); return; }
     if (t.dataset.pick) {
       saveConn({ model: t.dataset.m! }).then((c) => { conn = c; status = ""; }, (e: Error) => { status = e.message; }).finally(refreshModels);
       return;
@@ -176,6 +192,7 @@ export function bindSettings(ctx: Ctx) {
       if (id === "look") ctx.set({ theme: DEFAULT_PREFS.theme, accent: DEFAULT_PREFS.accent, custom: DEFAULT_PREFS.custom, textSize: DEFAULT_PREFS.textSize, density: DEFAULT_PREFS.density, radius: DEFAULT_PREFS.radius });
       if (id === "conn") { for (const k of ["set-key", "set-base"]) drafts.delete(k); void run(ctx, async () => { conn = await saveConn({ key: null, baseUrl: "" }); return "Подключение сброшено"; }); return; }
       if (id === "model") { drafts.delete("set-model"); void run(ctx, async () => { conn = await saveConn({ model: "", fallbackModel: "" }); return "Модели сброшены"; }); return; }
+      if (id === "memory") { void run(ctx, async () => { conn = await saveConn({ memory: true }); return "Запоминание включено"; }); return; }
       if (id === "data") { download("yaeori-settings.json", { ...p, collapsed: [] }); return; }
       ctx.rerender(); return;
     }
@@ -194,6 +211,8 @@ export function bindSettings(ctx: Ctx) {
         problem = null; models = r.models ?? [];
         return r.modelFound === false ? "Ключ принят, но выбранной модели нет в списке" : `Ключ принят, моделей: ${models.length}`;
       }); break;
+      case "scan": memStatus = "Читаю беседы…"; ctx.rerender(); scanMemories().then((r) => { memStatus = r.ok ? (r.empty ? "Бесед для чтения пока нет." : r.added ? `Вспомнила: ${r.added}.` : "Новых фактов не нашла.") : `${r.error ?? "Не получилось"}. ${r.hint ?? ""}`; return getMemories(); }).then((m) => { mem = m; }, (e: Error) => { memStatus = e.message; }).finally(ctx.rerender); break;
+      case "forget-all": if (confirm("Забыть всё, что Yaeori запомнила? Беседы останутся.")) forgetAll().then(() => getMemories()).then((m) => { mem = m; memStatus = "Память очищена."; }, () => {}).finally(ctx.rerender); break;
       case "refresh-models": void loadModels(ctx, false); break;
       case "test": { const m = t.dataset.m!; tests[m] = "wait"; refreshModels(); testModel(m).then((r) => { tests[m] = r; }, (e: Error) => { tests[m] = { ok: false, error: e.message }; }).finally(refreshModels); break; }
       case "toggle-all": ctx.set({ collapsed: p.collapsed.length >= SECTIONS.length ? [] : SECTIONS.map((s) => s.id) }); ctx.rerender(); break;

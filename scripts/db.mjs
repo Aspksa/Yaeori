@@ -20,7 +20,9 @@ export async function openDb(root) {
     CREATE TABLE IF NOT EXISTS chats (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
       role TEXT NOT NULL CHECK(role IN ('user','assistant')), content TEXT NOT NULL, created_at TEXT NOT NULL);
-    CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);`);
+    CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);
+    CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, topics TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'fact',
+      strength REAL NOT NULL DEFAULT 1, chat_id INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);`);
 
   let timer = null;
   const flush = () => {
@@ -37,6 +39,12 @@ export async function openDb(root) {
     const out = []; while (st.step()) out.push(st.getAsObject()); st.free(); return out;
   };
   const now = () => new Date().toISOString();
+  const norm = (t) => String(t).toLowerCase().replace(/[^a-zа-яё0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  const wordsOf = (t) => new Set(norm(t).split(" ").filter((w) => w.length >= 4 && !STOP.has(w)));
+  const jaccard = (a, b) => { if (!a.size || !b.size) return 0; let i = 0; for (const x of a) if (b.has(x)) i++; return i / (a.size + b.size - i); };
+  const cleanTopics = (arr) => [...new Set((Array.isArray(arr) ? arr : []).map((x) => norm(x).slice(0, 30)).filter((x) => x.length >= 2))].slice(0, 3);
+  const memRows = () => rows("SELECT m.id, m.text, m.topics, m.kind, m.strength, m.chat_id AS chatId, c.title AS chatTitle, m.created_at AS createdAt, m.updated_at AS at FROM memories m LEFT JOIN chats c ON c.id = m.chat_id ORDER BY m.updated_at DESC")
+    .map((m) => ({ ...m, topics: String(m.topics).split(",").filter(Boolean) }));
 
   return {
     file,
@@ -54,6 +62,64 @@ export async function openDb(root) {
      * Связь — два сообщения из РАЗНЫХ чатов с общими значимыми словами. Считается по тексту при каждом запросе,
      * поэтому отдельно нигде не хранится и всегда соответствует тому, что в базе.
      */
+    // ——— Память ———
+    /** Сохраняет факты. Повтор (то же или очень похожее) усиливает старую запись, а не плодит новую. boost:false — без усиления (сканирование старых бесед). */
+    remember: (facts, chatId = null, { boost = true } = {}) => {
+      let added = 0, strengthened = 0;
+      const existing = memRows();
+      for (const f of Array.isArray(facts) ? facts : []) {
+        const text = String(f?.text ?? "").replace(/\s+/g, " ").trim().slice(0, 200), topics = cleanTopics(f?.topics);
+        if (text.length < 6 || !topics.length) continue;
+        const kind = f?.kind === "note" ? "note" : "fact", w = wordsOf(text);
+        const same = existing.find((m) => norm(m.text) === norm(text) || (m.topics.some((t) => topics.includes(t)) && jaccard(wordsOf(m.text), w) >= 0.6));
+        if (same) {
+          const merged = [...new Set([...same.topics, ...topics])].slice(0, 3);
+          db.run("UPDATE memories SET strength = ?, topics = ?, updated_at = ? WHERE id = ?", [boost ? Math.min(same.strength + 1, 20) : same.strength, merged.join(","), boost ? now() : same.at, same.id]);
+          same.topics = merged; if (boost) { same.strength = Math.min(same.strength + 1, 20); strengthened++; }
+        } else {
+          db.run("INSERT INTO memories(text, topics, kind, strength, chat_id, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)", [text, topics.join(","), kind, chatId, now(), now()]);
+          existing.push({ id: rows("SELECT last_insert_rowid() AS id")[0].id, text, topics, kind, strength: 1, at: now() }); added++;
+        }
+      }
+      if (added || strengthened) save();
+      return { added, strengthened };
+    },
+    /** Какие воспоминания подсказать модели: совпавшие с текущим сообщением, затем сильные и свежие. */
+    recall: (text, n = 12) => {
+      const q = norm(text), qw = wordsOf(text), day = 86400000, t = Date.now();
+      return memRows().map((m) => {
+        const hit = m.topics.filter((x) => q.includes(x)).length * 4 + jaccard(wordsOf(m.text), qw) * 6;
+        return { m, score: hit + Math.log(1 + m.strength) + Math.exp(-(t - Date.parse(m.at)) / (60 * day)) };
+      }).sort((a, b) => b.score - a.score).slice(0, n).map((x) => x.m);
+    },
+    listMemories: (topic = "") => memRows().filter((m) => !topic || m.topics.includes(norm(topic))).slice(0, 300),
+    deleteMemory: (id) => { db.run("DELETE FROM memories WHERE id = ?", [id]); save(); },
+    clearMemories: () => { db.run("DELETE FROM memories"); save(); },
+    countMemories: () => rows("SELECT count(*) AS n FROM memories")[0].n,
+    /** Последние реплики из всех чатов для сканирования старых бесед. */
+    transcript: (limit = 60) => rows("SELECT chat_id AS chatId, role, content FROM (SELECT id, chat_id, role, content FROM messages ORDER BY id DESC LIMIT ?) ORDER BY id", [limit]),
+    /**
+     * Мозг: темы — узлы-центры, факты — точки вокруг своей темы. Связь — два факта из РАЗНЫХ тем, у которых есть общая тема.
+     * Рост: size и сила факта растут с повторами; «strong» у тех, что подтверждались несколько раз.
+     */
+    memGraph: () => {
+      const all = memRows().slice(0, 400), weight = new Map();
+      for (const m of all) m.topics.forEach((t, i) => weight.set(t, (weight.get(t) ?? 0) + m.strength * (i === 0 ? 1 : 0.4)));
+      const top = [...weight].sort((a, b) => b[1] - a[1]).slice(0, 16).map(([t]) => t), id = new Map(top.map((t, i) => [t, i + 1]));
+      const mems = []; 
+      for (const m of all) { const g = m.topics.find((t) => id.has(t)); if (g) mems.push({ ...m, grp: id.get(g) }); }
+      const chats = top.map((t) => ({ id: id.get(t), title: t, count: mems.filter((m) => m.grp === id.get(t)).length })).filter((c) => c.count > 0);
+      const day = 86400000, t = Date.now(), tierOf = (m) => { const age = (t - Date.parse(m.at)) / day; return m.strength >= 3 ? "long" : age <= 3 ? "fresh" : age > 14 ? "fading" : "plain"; };
+      const messages = mems.map((m) => ({ id: m.id, chatId: m.grp, role: m.kind === "fact" ? "user" : "assistant", preview: m.text, size: Math.round(40 * m.strength), at: m.createdAt, upd: m.at, tier: tierOf(m), hits: m.strength, src: m.chatId ?? 0, topics: m.topics }));
+      const byTopic = new Map(); for (const m of mems) for (const t of m.topics) byTopic.set(t, [...(byTopic.get(t) ?? []), m]);
+      const pairs = new Map();
+      for (const [t, ms] of byTopic) { if (ms.length < 2 || ms.length > 14) continue;
+        for (let i = 0; i < ms.length; i++) for (let j = i + 1; j < ms.length; j++) { const a = ms[i], b = ms[j]; if (a.grp === b.grp) continue;
+          const k = Math.min(a.id, b.id) + ":" + Math.max(a.id, b.id), p = pairs.get(k) ?? { a: a.id, b: b.id, w: 0, words: [] }; p.w++; if (p.words.length < 3) p.words.push(t); pairs.set(k, p); } }
+      const links = [...pairs.values()].sort((x, y) => y.w - x.w).slice(0, 120), total = all.length, STAGES = [[0, "Зародыш"], [5, "Росток"], [20, "Ученик"], [60, "Знаток"], [150, "Мудрец"]];
+      let lv = 0; STAGES.forEach(([n], i) => { if (total >= n) lv = i; });
+      return { mode: "memory", chats, messages, links, stats: { memories: total, topics: chats.length, links: links.length, level: lv + 1, levelName: STAGES[lv][1], next: STAGES[lv + 1]?.[0] ?? null } };
+    },
     graph: () => {
       const chats = rows("SELECT c.id, c.title, (SELECT count(*) FROM messages m WHERE m.chat_id = c.id) AS count FROM chats c ORDER BY c.id DESC LIMIT 12");
       const full = rows("SELECT id, chat_id AS chatId, role, content, created_at AS at FROM messages WHERE chat_id IN (SELECT id FROM chats ORDER BY id DESC LIMIT 12) ORDER BY id DESC LIMIT 400").reverse();

@@ -40,11 +40,11 @@ const ICONS: Record<SysItem["icon"], string> = {
 const PATHS = Object.fromEntries(Object.entries(ICONS).map(([k, d]) => [k, new Path2D(d)])) as Record<SysItem["icon"], Path2D>;
 
 type Kind = "core" | "hub" | "msg" | "sys";
-interface N { key: string; kind: Kind; id: number; chatId: number; grp: string; role?: "user" | "assistant"; text: string; size: number; at: string; x: number; y: number; tx: number; ty: number; vx: number; vy: number; born: number; hue: number; visible: boolean; key2?: boolean; sys?: SysItem }
+interface N { key: string; kind: Kind; id: number; chatId: number; grp: string; role?: "user" | "assistant"; text: string; size: number; at: string; x: number; y: number; tx: number; ty: number; vx: number; vy: number; born: number; hue: number; visible: boolean; key2?: boolean; sys?: SysItem; tier?: string; hits?: number; src?: number; shown?: boolean }
 export interface GraphHandle {
   destroy(): void; update(d: GraphData): void; select(chatId: number | null): void;
   setOptions(p: Partial<MapOptions>): void; options(): MapOptions; setSystem(items: SysItem[]): void;
-  expandAll(): void; collapseAll(): void; recenter(): void; search(q: string): void; png(): Promise<Blob | null>; show(on: boolean): boolean;
+  expandAll(): void; collapseAll(): void; reset(): void; setCutoff(t: number | null): void; range(): [number, number] | null; recenter(): void; search(q: string): void; png(): Promise<Blob | null>; show(on: boolean): boolean;
 }
 interface Callbacks { onPick: (chatId: number) => void; onCollapse?: (keys: string[]) => void; onSystem?: (id: string) => void; onShowEnd?: () => void }
 
@@ -75,7 +75,8 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   let cam = { x: 0, y: 0, k: 1 }, fitted = false, hover: N | null = null, mouse: { x: number; y: number } | null = null;
   let drag: { sx: number; sy: number; cx: number; cy: number; moved: boolean } | null = null, pal = palette(o.theme), palAt = 0;
   let tour: { on: boolean; i: number; at: number } = { on: false, i: -1, at: 0 };
-  const seen = new Set<number>();
+  const seen = new Set<number>(); let cutoff: number | null = null;
+  const memory = () => data.mode === "memory";
 
   const fitK = () => Math.min(w, h) / (R * 2.5);
   const fit = () => { cam = { x: 0, y: 0, k: fitK() }; };
@@ -116,7 +117,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       keep.add("m" + m.id);
       let n = nodes.get("m" + m.id);
       if (!n) { n = mk("m" + m.id, "msg", { id: m.id, x: hub.x + (Math.random() - .5) * 20, y: hub.y + (Math.random() - .5) * 20 }); nodes.set(n.key, n); }
-      Object.assign(n, { chatId: m.chatId, grp, role: m.role, text: m.preview, size: m.size, at: m.at, hue: hub.hue, key2: (m.role === "assistant" && m.size > 350) || lastOf.get(grp) === m.id });
+      Object.assign(n, { chatId: m.chatId, grp, role: m.role, text: m.preview, size: m.size, at: m.at, hue: hub.hue, tier: m.tier, hits: m.hits, src: m.src, key2: memory() ? m.tier === "long" : (m.role === "assistant" && m.size > 350) || lastOf.get(grp) === m.id });
     }
     sysItems.forEach((s, i) => { const key = "s" + s.id; keep.add(key); let n = nodes.get(key); if (!n) { n = mk(key, "sys", { x: 0, y: 0 }); nodes.set(key, n); } Object.assign(n, { sys: s, text: s.label, hue: i }); });
     for (const k of [...nodes.keys()]) if (!keep.has(k)) nodes.delete(k);
@@ -124,18 +125,24 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   }
 
   const msgsOf = (grp: string) => order.filter((n) => n.kind === "msg" && n.grp === grp);
-  const radius = (n: N) => n.kind === "core" ? 26 : n.kind === "sys" ? 14 : n.kind === "hub" ? (8 + Math.sqrt(n.size) * 0.9) * o.size : (n.key2 ? 4.6 : 2.7 + Math.min(Math.log10(n.size + 1), 3) * 0.5) * o.size;
+  const radius = (n: N) => n.kind === "msg" && memory() ? (4.2 + Math.min(n.hits ?? 1, 12) * 0.75) * o.size * (n.key2 ? 1.2 : 1) : n.kind === "core" ? 26 : n.kind === "sys" ? 14 : n.kind === "hub" ? (8 + Math.sqrt(n.size) * 0.9) * o.size : (n.key2 ? 4.6 : 2.7 + Math.min(Math.log10(n.size + 1), 3) * 0.5) * o.size;
 
   let sectors: { a0: number; a1: number; hue: number }[] = [];
   function targets() {
     const hubs = order.filter((n) => n.kind === "hub"), collapsed = new Set(o.collapsed);
     for (const n of order) n.visible = n.kind !== "msg" || !collapsed.has("h" + n.grp);
+    if (cutoff !== null) { // развитие: показываем только то, что уже родилось к выбранному моменту
+      const live = new Set<string>();
+      for (const n of order) if (n.kind === "msg") { if (Date.parse(n.at) > cutoff) n.visible = false; else live.add(n.grp); }
+      for (const n of order) if (n.kind === "hub" && !live.has(n.grp)) n.visible = false;
+    }
+    for (const n of order) { if (n.shown === false && n.visible && cutoff !== null && !still) n.born = performance.now(); n.shown = n.visible; }
     const sys = order.filter((n) => n.kind === "sys");
     sys.forEach((sn, i) => { const a = (i / Math.max(sys.length, 1)) * TAU - 1.5708 - rot * 0.6, rr = R * 1.08; sn.tx = Math.cos(a) * rr; sn.ty = Math.sin(a) * rr; if (o.layout === "force") { sn.x = sn.tx; sn.y = sn.ty; } });
     if (o.layout === "force") return;
     const core = nodes.get("core")!;
     if (o.layout === "rings") {
-      const tot = order.filter((n) => n.kind === "msg" && n.visible).length, g = (8.5 + 8 * Math.max(0, 1 - tot / 250)) * o.size, r0 = R * 0.3, wts = hubs.map((hb) => Math.pow(Math.max(msgsOf(hb.grp).length, 3), 0.6)), wsum = wts.reduce((x, y) => x + y, 0) || 1;
+      const tot = order.filter((n) => n.kind === "msg" && n.visible).length, g = (memory() ? Math.max(11, 24 - tot * 0.12) : 8.5 + 8 * Math.max(0, 1 - tot / 250)) * o.size, r0 = R * 0.3, wts = hubs.map((hb) => Math.pow(Math.max(msgsOf(hb.grp).length, 3), 0.6)), wsum = wts.reduce((x, y) => x + y, 0) || 1;
       let at = 0;
       hubs.forEach((hb, i) => {
         const share = (wts[i]! / wsum) * TAU, a0 = at - 1.5708 + rot; at += share;
@@ -307,8 +314,8 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       const on = hover && (hover.key === a.key || hover.key === b.key || (hover.kind === "hub" && (a.chatId === hover.chatId || b.chatId === hover.chatId)));
       if (hover && !on && (hover.kind === "msg" || hover.kind === "hub")) continue;
       const pa = toScreen(a.x, a.y), pb = toScreen(b.x, b.y), mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
-      ctx.strokeStyle = on ? pal.text : pal.muted; ctx.globalAlpha = (on ? 0.85 : 0.16) * Math.min(1, 0.5 + l.w * 0.25); ctx.lineWidth = on ? 1.4 : 1;
-      ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.quadraticCurveTo(mx + (c0.x - mx) * 0.35, my + (c0.y - my) * 0.35, pb.x, pb.y); ctx.stroke();
+      ctx.strokeStyle = on ? pal.text : pal.muted; ctx.globalAlpha = (on ? 0.9 : memory() ? 0.24 : 0.16) * Math.min(1, 0.5 + l.w * 0.25); ctx.lineWidth = (on ? 1.4 : 1) + (memory() ? Math.min(2.2, (l.w - 1) * 0.7) : 0);
+      ctx.beginPath(); ctx.moveTo(pa.x, pa.y); const bend = memory() ? 0.12 : 0.35; ctx.quadraticCurveTo(mx + (c0.x - mx) * bend, my + (c0.y - my) * bend, pb.x, pb.y); ctx.stroke();
     }
     ctx.globalAlpha = 1;
     // центр: двойное кольцо и знак
@@ -332,11 +339,12 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
         ctx.save(); ctx.translate(p.x - r * 0.55, p.y - r * 0.55); ctx.scale((r * 1.1) / 24, (r * 1.1) / 24); ctx.strokeStyle = col; ctx.lineWidth = 2 / ((r * 1.1) / 24) * 0.9; ctx.stroke(PATHS[s.icon]); ctx.restore();
         ctx.globalAlpha = 1; continue;
       }
-      ctx.globalAlpha = dim; ctx.fillStyle = n.kind === "hub" ? hue(n) : n.role === "user" ? pal.user : pal.bot;
-      if (n.kind === "msg" && !n.key2) { const tw = still ? 1 : 0.88 + Math.sin(now * 0.002 + n.id * 1.7) * 0.12; ctx.globalAlpha = dim * tw; ctx.fillRect(p.x - r * 0.8, p.y - r * 0.8, r * 1.6, r * 1.6); }
+      const fade = memory() && n.tier === "fading" ? 0.45 : 1;
+      ctx.globalAlpha = dim * fade; ctx.fillStyle = n.kind === "hub" ? hue(n) : memory() ? (n.tier === "fresh" ? pal.user : n.tier === "long" ? hue(n) : n.tier === "fading" ? pal.muted : pal.bot) : n.role === "user" ? pal.user : pal.bot;
+      if (n.kind === "msg" && !n.key2) { const tw = still ? 1 : 0.88 + Math.sin(now * 0.002 + n.id * 1.7) * 0.12; ctx.globalAlpha = dim * fade * tw; ctx.fillRect(p.x - r * 0.8, p.y - r * 0.8, r * 1.6, r * 1.6); }
       else { ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill(); }
       // свечение у ключевых, выбранных, найденных и наведённых
-      if (n.kind === "hub" || n === hover || (n.kind === "msg" && n.key2 && n.chatId === selected) || (query && hit)) {
+      if (n.kind === "hub" || n === hover || (n.kind === "msg" && n.key2 && (memory() || n.chatId === selected)) || (memory() && n.tier === "fresh") || (query && hit)) {
         ctx.globalAlpha = n === hover ? 0.55 : 0.28; ctx.strokeStyle = n.kind === "hub" ? hue(n) : (query && hit) ? pal.text : ctx.fillStyle as string; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(p.x, p.y, r + 4 + (still ? 0 : Math.sin(now * 0.003) * 1.2), 0, TAU); ctx.stroke();
         if (n === hover) { ctx.globalAlpha = 0.25; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(p.x, p.y, r + 9, 0, TAU); ctx.stroke(); }
       }
@@ -355,8 +363,10 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       const p = toScreen(hover.x, hover.y); tip.hidden = false;
       const links = hover.kind === "msg" ? data.links.filter((l) => l.a === hover!.id || l.b === hover!.id) : [];
       const words = [...new Set(links.flatMap((l) => l.words))].slice(0, 4);
-      tip.innerHTML = hover.kind === "hub" ? `<strong></strong><small>${hover.size} сообщ.</small><span>Двойной щелчок — свернуть или развернуть</span>`
+      const TIERS: Record<string, string> = { fresh: "Свежая память", long: "Долгая память", fading: "Забывается", plain: "Воспоминание" };
+      tip.innerHTML = hover.kind === "hub" ? `<strong></strong><small>${hover.size} ${memory() ? "воспомин." : "сообщ."}</small><span>Двойной щелчок — свернуть или развернуть</span>`
         : hover.kind === "sys" ? `<strong></strong><small></small>`
+        : memory() ? `<strong>${TIERS[hover.tier ?? "plain"]}</strong><small>Подтверждено ×${hover.hits ?? 1} · ${new Date(hover.at).toLocaleDateString("ru-RU")}</small><span></span>${words.length ? `<em></em>` : ""}`
         : `<strong>${hover.role === "user" ? "Вы" : "Yaeori"}</strong><small>${new Date(hover.at).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })}</small><span></span>${words.length ? `<em></em>` : ""}`;
       if (hover.kind === "hub") tip.querySelector("strong")!.textContent = hover.text;
       else if (hover.kind === "sys") { tip.querySelector("strong")!.textContent = hover.sys!.label; tip.querySelector("small")!.textContent = hover.sys!.detail; }
@@ -372,7 +382,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   canvas.addEventListener("pointermove", (e) => { const p = pos(e); mouse = p; if (drag) { const dx = p.x - drag.sx, dy = p.y - drag.sy; if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true; if (drag.moved) { cam.x = drag.cx - dx / cam.k; cam.y = drag.cy - dy / cam.k; } } });
   canvas.addEventListener("pointerup", (e) => {
     const was = drag; drag = null; try { canvas.releasePointerCapture(e.pointerId); } catch { /* уже отпущен */ }
-    if (was && !was.moved && hover) { if (hover.kind === "sys") cb.onSystem?.(hover.sys!.id); else cb.onPick(hover.chatId); }
+    if (was && !was.moved && hover) { if (hover.kind === "sys") cb.onSystem?.(hover.sys!.id); else if (memory()) { if (hover.kind === "msg" && hover.src) cb.onPick(hover.src); } else cb.onPick(hover.chatId); }
   });
   canvas.addEventListener("pointerleave", () => { mouse = null; });
   canvas.addEventListener("dblclick", () => {
@@ -401,6 +411,9 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     setSystem(items) { sysItems = items; rebuild(); },
     expandAll() { o = { ...o, collapsed: [] }; cb.onCollapse?.(o.collapsed); },
     collapseAll() { o = { ...o, collapsed: order.filter((n) => n.kind === "hub").map((n) => n.key) }; cb.onCollapse?.(o.collapsed); },
+    reset() { nodes.clear(); seen.clear(); cutoff = null; rebuild(); },
+    setCutoff(t) { cutoff = t; },
+    range() { const ts = data.messages.map((m) => Date.parse(m.at)).filter((x) => x > 0); return ts.length ? [Math.min(...ts), Math.max(...ts)] : null; },
     recenter() { stopTour(); fit(); },
     search(q) { query = q.trim().toLowerCase(); },
     png: () => new Promise((resolve) => { draw(performance.now()); canvas.toBlob((b) => resolve(b), "image/png"); }),
