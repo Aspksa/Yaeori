@@ -145,3 +145,34 @@ code{padding:2px 8px;border-radius:var(--r-sm);background:var(--surface-2)}
 :root{--violet:#7c5cf0}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--violet:#a78bfa}}
 :root[data-theme=dark]{--violet:#a78bfa}
+
+/* ---------- панель настроек карты ---------- */
+.viz-hint{display:none;white-space:nowrap}
+@media (min-width:1300px){.viz-hint{display:inline}}
+.viz-panel{position:absolute;z-index:3;top:10px;right:10px;bottom:10px;width:250px;overflow:auto;padding:12px;border:1px solid var(--line);border-radius:var(--r-lg);background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(10px);box-shadow:var(--shadow);display:flex;flex-direction:column;gap:8px}
+.viz-panel[hidden]{display:none}
+.viz-panel h3{margin:8px 0 0;font-size:var(--fs-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.viz-panel input[type=search]{min-height:34px}
+.viz-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.viz-grid button,.viz-themes button{padding:7px 8px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);font-size:var(--fs-sm);text-align:left}
+.viz-grid button[aria-checked=true],.viz-themes button[aria-checked=true]{background:var(--brand);color:var(--brand-fg);border-color:transparent;font-weight:600}
+.viz-range{display:grid;grid-template-columns:1fr auto;gap:2px 8px;font-size:var(--fs-sm)}
+.viz-range output{color:var(--muted);font-variant-numeric:tabular-nums}
+.viz-range input{grid-column:1/-1;width:100%;accent-color:var(--brand)}
+.viz-check{display:flex;gap:8px;align-items:center;font-size:var(--fs-sm)}.viz-check input{accent-color:var(--brand)}
+.viz-row{display:flex;flex-wrap:wrap;gap:6px}
+.viz-themes{display:grid;gap:6px}
+.viz-themes button{display:flex;align-items:center;gap:8px}
+.viz-themes .sw{display:inline-flex;gap:3px}.viz-themes .sw i{width:12px;height:12px;border-radius:3px}
+@media (max-width:860px){.viz-panel{width:auto;left:10px}}
+
+/* ---------- оформление карты как в «Втором мозге»: моно-капс, зелёная точка, метка «Используется» ---------- */
+.viz-stats{display:block;margin-top:2px;font:600 var(--fs-xs)/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.viz-stats .live{display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.viz-head strong{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.05em;text-transform:uppercase;font-size:var(--fs-md)}
+.viz-panel h3,.viz-range span{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.viz-themes button{flex-wrap:wrap}.viz-themes button b{font-weight:600}
+.viz-themes button em{display:none;flex-basis:100%;font:normal 600 var(--fs-xs)/1 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.06em;text-transform:uppercase;opacity:.75}
+.viz-themes button[aria-checked=true] em{display:block}
+#viz-show[aria-pressed=true]{background:var(--brand);color:var(--brand-fg);border-color:transparent}
+.graph-tip em{display:block;margin-top:3px;font-style:normal;font-size:var(--fs-xs);color:var(--brand)}

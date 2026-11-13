@@ -14,7 +14,7 @@ export const checkConn = () => call<CheckResult>("/api/check", { method: "POST",
 
 export interface ChatInfo { id: number; title: string; createdAt: string; count: number }
 export interface Msg { id: number; role: "user" | "assistant"; content: string; at: string }
-export interface GraphData { chats: { id: number; title: string; count: number }[]; messages: { id: number; chatId: number; role: "user" | "assistant"; preview: string; size: number; at: string }[] }
+export interface GraphData { chats: { id: number; title: string; count: number }[]; messages: { id: number; chatId: number; role: "user" | "assistant"; preview: string; size: number; at: string }[]; links: { a: number; b: number; w: number; words: string[] }[] }
 
 export const listChats = () => call<ChatInfo[]>("/api/chats");
 export const createChat = () => call<{ id: number }>("/api/chats", { method: "POST", body: "{}" });

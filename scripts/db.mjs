@@ -4,6 +4,8 @@ import path from "node:path";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import initSqlJs from "sql.js";
 
+const STOP = new Set("который которая которое которые также можно очень будет есть этого этой этом чтобы когда если после перед через между потому какой какая какие нужно надо вопрос номер привет здравствуйте сообщений сообщение about which would there their these those other where while using should could себя меня тебя тебе мной свой свои своё всего быть были было была только ещё уже или либо чего этим этих того тому тоже здесь сейчас".split(" "));
+
 export async function openDb(root) {
   const file = path.join(root, "data", "yaeori.sqlite3");
   const SQL = await initSqlJs();
@@ -47,10 +49,31 @@ export async function openDb(root) {
     messages: (chatId) => rows("SELECT id, role, content, created_at AS at FROM messages WHERE chat_id = ? ORDER BY id", [chatId]),
     recent: (chatId, n) => rows("SELECT role, content FROM (SELECT id, role, content FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id", [chatId, n]),
     addMessage: (chatId, role, content) => { db.run("INSERT INTO messages(chat_id, role, content, created_at) VALUES (?, ?, ?, ?)", [chatId, role, content, now()]); save(); return rows("SELECT last_insert_rowid() AS id")[0].id; },
-    /** Данные для карты беседы: чаты и последние сообщения (только начало текста). */
-    graph: () => ({
-      chats: rows("SELECT c.id, c.title, (SELECT count(*) FROM messages m WHERE m.chat_id = c.id) AS count FROM chats c ORDER BY c.id DESC LIMIT 12"),
-      messages: rows("SELECT id, chat_id AS chatId, role, substr(content, 1, 160) AS preview, length(content) AS size, created_at AS at FROM messages WHERE chat_id IN (SELECT id FROM chats ORDER BY id DESC LIMIT 12) ORDER BY id DESC LIMIT 400").reverse(),
-    }),
+    /**
+     * Данные для карты беседы: чаты, последние сообщения (только начало текста) и связи между чатами.
+     * Связь — два сообщения из РАЗНЫХ чатов с общими значимыми словами. Считается по тексту при каждом запросе,
+     * поэтому отдельно нигде не хранится и всегда соответствует тому, что в базе.
+     */
+    graph: () => {
+      const chats = rows("SELECT c.id, c.title, (SELECT count(*) FROM messages m WHERE m.chat_id = c.id) AS count FROM chats c ORDER BY c.id DESC LIMIT 12");
+      const full = rows("SELECT id, chat_id AS chatId, role, content, created_at AS at FROM messages WHERE chat_id IN (SELECT id FROM chats ORDER BY id DESC LIMIT 12) ORDER BY id DESC LIMIT 400").reverse();
+      const messages = full.map((m) => ({ id: m.id, chatId: m.chatId, role: m.role, preview: String(m.content).slice(0, 160), size: String(m.content).length, at: m.at }));
+      const index = new Map();
+      for (const m of full) {
+        const words = new Set((String(m.content).toLowerCase().match(/[a-zа-яё]{5,}/g) ?? []).filter((w) => !STOP.has(w)));
+        for (const w of words) { const a = index.get(w) ?? []; a.push(m); index.set(w, a); }
+      }
+      const pairs = new Map();
+      for (const [w, ms] of index) {
+        if (ms.length < 2 || ms.length > 8) continue; // слишком общие слова связей не дают
+        for (let i = 0; i < ms.length; i++) for (let j = i + 1; j < ms.length; j++) {
+          const a = ms[i], b = ms[j]; if (a.chatId === b.chatId) continue;
+          const k = a.id + ":" + b.id, p = pairs.get(k) ?? { a: a.id, b: b.id, w: 0, words: [] };
+          p.w++; if (p.words.length < 3) p.words.push(w); pairs.set(k, p);
+        }
+      }
+      const links = [...pairs.values()].sort((x, y) => y.w - x.w).slice(0, 120);
+      return { chats, messages, links };
+    },
   };
 }
