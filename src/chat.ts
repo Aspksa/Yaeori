@@ -12,7 +12,7 @@ export function renderText(src: string): string {
 }
 
 const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v1";
-const LAYOUTS: [Layout, string][] = [["rings", "Кольца"], ["circle", "Круг"], ["hex", "Соты"], ["force", "Сила"]];
+const LAYOUTS: [Layout, string][] = [["rings", "Кольца"], ["circle", "Круг"], ["hex", "Соты"], ["tile", "Плита"], ["hud", "HUD"], ["force", "Сила"]];
 const num = (v: unknown, lo: number, hi: number, d: number) => (typeof v === "number" && v >= lo && v <= hi ? v : d);
 function loadMap(): MapOptions {
   try {
