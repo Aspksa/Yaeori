@@ -85,8 +85,9 @@ export function createApp({ root, db, dist = null }) {
   /** Выделяет факты из одной реплики и сохраняет. Ошибка не мешает чату. */
   async function learn(s, model, id, userText, reply) {
     try {
+      const sm = db.getSummary(id)?.text;
       const sys = LEARN.replace("{N}", "4") + topicHint() + " Если запоминать нечего, верни [].";
-      const txt = await askModel(s, model, sys, `Пользователь: ${userText.slice(0, 1500)}\n\nОтвет ассистента: ${reply.slice(0, 700)}`);
+      const txt = await askModel(s, model, sys, `${sm ? `Кратко о беседе до этого: ${sm.slice(0, 600)}\n\n` : ""}Пользователь: ${userText.slice(0, 1500)}\n\nОтвет ассистента: ${reply.slice(0, 700)}`);
       const res = db.remember(parseFacts(txt), id);
       if (res.addedIds?.length) await indexVectors(s, 16);
       return res;
@@ -101,6 +102,18 @@ export function createApp({ root, db, dist = null }) {
     const res = db.remember(parseFacts(txt), null, { boost: false });
     if (res.addedIds?.length) await indexVectors(s, 64);
     return res;
+  }
+  /** Скользящее резюме: всё, что старше последних 10 сообщений, сжимается в короткий пересказ (обновляется, когда набралось 8 новых). */
+  const KEEP_LIVE = 10, SUM_BATCH = 8, sumBusy = new Set();
+  async function summarize(s, model, id) {
+    if (sumBusy.has(id)) return; sumBusy.add(id);
+    try {
+      const prev = db.getSummary(id), upto = prev?.upto ?? 0, total = db.messageCount(id); if (total < KEEP_LIVE + SUM_BATCH) return;
+      const fresh = db.messagesAfter(id, upto, 60), cover = fresh.slice(0, Math.max(0, fresh.length - KEEP_LIVE)); if (cover.length < SUM_BATCH) return;
+      const sys = "Ты ведёшь краткий пересказ беседы. Обнови пересказ: сохрани важные факты, решения, договорённости и открытые вопросы, выбрось мелочи. Не более 700 символов, по-русски, связным текстом без вступлений.";
+      const txt = await askModel(s, model, sys, `${prev ? `Пересказ до этого:\n${prev.text}\n\n` : ""}Новые сообщения:\n${cover.map((m) => (m.role === "user" ? "Пользователь: " : "Ассистент: ") + m.content.replace(/\s+/g, " ").slice(0, 500)).join("\n")}`, 500);
+      if (txt?.trim().length >= 20) db.setSummary(id, txt.trim(), cover[cover.length - 1].id);
+    } catch { /* резюме не обязательно */ } finally { sumBusy.delete(id); }
   }
   const memoryNote = (mem) => {
     if (!mem.length) return "";
@@ -119,7 +132,7 @@ export function createApp({ root, db, dist = null }) {
     if (!s.model) { send(other("NO_MODEL")); return res.end(); }
     const ctrl = new AbortController();
     res.on("close", () => ctrl.abort());
-    const history = db.recent(id, 20).map((m) => ({ role: m.role, content: m.content })), mem = s.memory !== false ? db.recall(text, 12, await embed(s, [text], 6000).then((v) => v[0]).catch(() => null)) : [], system = SYSTEM + memoryNote(mem);
+    const sum = db.getSummary(id), history = (sum ? db.messagesAfter(id, sum.upto, 24) : db.recent(id, 20)).map((m) => ({ role: m.role, content: m.content })), mem = s.memory !== false ? db.recall(text, 12, await embed(s, [text], 6000).then((v) => v[0]).catch(() => null)) : [], system = SYSTEM + memoryNote(mem) + (sum ? "\n\nКратко о том, что было раньше в этой беседе: " + sum.text : "");
     if (mem.length) send({ recalled: mem.map((m) => ({ id: m.id, text: m.text, hop: Boolean(m.hop) })) });
     const order = [s.model, ...(s.fallbackModel && s.fallbackModel !== s.model ? [s.fallbackModel] : [])];
     let lastErr = null;
@@ -130,7 +143,7 @@ export function createApp({ root, db, dist = null }) {
       if (out.ok) {
         send({ assistant: db.addMessage(id, "assistant", out.text), done: true });
         if (s.memory !== false && !ctrl.signal.aborted) send({ brain: await learn(s, model, id, text, out.text) });
-        return res.end();
+        res.end(); void summarize(s, model, id); return;
       }
       if (out.partial) { db.addMessage(id, "assistant", out.partial); }
       if (out.aborted) return res.end();
@@ -243,13 +256,26 @@ export function createApp({ root, db, dist = null }) {
           out.conflicts = (Array.isArray(arr) ? arr : []).filter((c) => ids.has(Number(c?.a)) && ids.has(Number(c?.b)) && c.a !== c.b).slice(0, 20).map((c) => ({ a: { id: Number(c.a), text: texts.find((m) => m.id === Number(c.a)).text }, b: { id: Number(c.b), text: texts.find((m) => m.id === Number(c.b)).text }, why: String(c.why ?? "").slice(0, 160) }));
         } catch (e) { out.conflictsError = e?.explained?.error ?? "Противоречия не проверены: ответ модели не распознан"; }
       } else out.conflictsError = "Для поиска противоречий нужны ключ и модель Cloud.ru";
+      out.compress = [];
+      if (s.key && s.model) for (const c of db.compressClusters()) try {
+        const txt = (await askModel(s, s.model, "Объедини эти факты о пользователе в ОДНО обобщённое утверждение, не потеряв ничего устойчивого. Не более 190 символов, по-русски, одна фраза, без вступлений и кавычек.", c.items.map((m) => "- " + m.text).join("\n"), 160)).trim().replace(/^["«]|["»]$/g, "");
+        if (txt.length >= 10 && txt.length <= 200) out.compress.push({ topic: c.topic, ids: c.items.map((m) => m.id), items: c.items.map((m) => m.text), summary: txt });
+      } catch { /* пропускаем тему */ }
       return json(res, 200, out);
     }
     if (pathname === "/api/memories/merge" && req.method === "POST") {
       let b; try { b = await body(req); } catch { return json(res, 400, { error: "Некорректный запрос" }); }
-      const r = db.mergeMemories(Number(b.keep), (Array.isArray(b.drop) ? b.drop : []).map(Number)); if (!r) return json(res, 404, { error: "Нечего объединять" });
+      const r = db.mergeMemories(Number(b.keep), (Array.isArray(b.drop) ? b.drop : []).map(Number), b.history === true); if (!r) return json(res, 404, { error: "Нечего объединять" });
       setTimeout(() => void tick(), 300); return json(res, 200, r);
     }
+    if (pathname === "/api/memories/inactive" && req.method === "GET") return json(res, 200, { items: db.inactive() });
+    if (pathname === "/api/memories/compress" && req.method === "POST") {
+      let b; try { b = await body(req); } catch { return json(res, 400, { error: "Некорректный запрос" }); }
+      const r = db.compressMemories((Array.isArray(b.ids) ? b.ids : []).map(Number), b.text, String(b.topic ?? "")); if (!r) return json(res, 400, { error: "Нечего сжимать" });
+      setTimeout(() => void tick(), 300); return json(res, 200, r);
+    }
+    const rs = /^\/api\/memories\/(\d+)\/restore$/.exec(pathname);
+    if (rs && req.method === "POST") { const r = db.restoreMemory(Number(rs[1])); return r ? json(res, 200, r) : json(res, 404, { error: "Нечего возвращать" }); }
     const mp = /^\/api\/memories\/(\d+)$/.exec(pathname);
     if (mp && req.method === "PUT") {
       let b; try { b = await body(req); } catch { return json(res, 400, { error: "Некорректный запрос" }); }
@@ -309,6 +335,7 @@ export function createApp({ root, db, dist = null }) {
   // автоматически: векторы досчитываются сами (старт, каждые 10 минут, смена ключа или модели)
   let tickBusy = false;
   const tick = async () => {
+    db.decay();
     const s = read(); if (tickBusy || !s.key || s.memory === false) return;
     const st = db.vecStats(); if (!(st.total > st.indexed)) return;
     tickBusy = true; try { for (let i = 0; i < 40; i++) { const n = await indexVectors(s, 128); if (!n) break; } } finally { tickBusy = false; }

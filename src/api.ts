@@ -42,9 +42,13 @@ export const forgetAll = () => call<{ ok: true }>("/api/memories", { method: "DE
 export const updateMemory = (id: number, patch: { text?: string; topics?: string[] | string; pinned?: boolean }) => call<{ ok?: boolean; error?: string }>(`/api/memories/${id}`, { method: "PUT", body: JSON.stringify(patch) });
 export const exportAll = () => call<Record<string, unknown>>("/api/export");
 export const importAll = (data: unknown) => call<{ ok?: boolean; chats?: number; messages?: number; memories?: number; error?: string }>("/api/import", { method: "POST", body: JSON.stringify(data) });
-export interface Review { merges: { keep: number; items: { id: number; text: string; hits: number; pinned: boolean }[] }[]; conflicts: { a: { id: number; text: string }; b: { id: number; text: string }; why: string }[]; conflictsError: string | null }
+export interface Review { merges: { keep: number; items: { id: number; text: string; hits: number; pinned: boolean }[] }[]; conflicts: { a: { id: number; text: string }; b: { id: number; text: string }; why: string }[]; conflictsError: string | null; compress?: { topic: string; ids: number[]; items: string[]; summary: string }[] }
 export const reviewMemories = () => call<Review>("/api/memories/review", { method: "POST", body: "{}" });
-export const mergeMemories = (keep: number, drop: number[]) => call<{ ok?: boolean; error?: string }>("/api/memories/merge", { method: "POST", body: JSON.stringify({ keep, drop }) });
+export const mergeMemories = (keep: number, drop: number[], history = false) => call<{ ok?: boolean; error?: string }>("/api/memories/merge", { method: "POST", body: JSON.stringify({ keep, drop, history }) });
+export interface Inactive { id: number; text: string; state: "archived" | "replaced"; topics: string[]; at: string; replacedBy: number | null; replacedText: string | null }
+export const getInactive = () => call<{ items: Inactive[] }>("/api/memories/inactive");
+export const restoreMemory = (id: number) => call<{ ok?: boolean; error?: string }>(`/api/memories/${id}/restore`, { method: "POST", body: "{}" });
+export const compressMemories = (ids: number[], text: string, topic: string) => call<{ ok?: boolean; error?: string }>("/api/memories/compress", { method: "POST", body: JSON.stringify({ ids, text, topic }) });
 export interface VecInfo { total: number; indexed: number; model: string; ok: boolean | null; error: string; done?: number }
 export const getVectors = () => call<VecInfo>("/api/vectors");
 export const buildVectors = () => call<VecInfo & Explained>("/api/vectors/build", { method: "POST", body: "{}" });
