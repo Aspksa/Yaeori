@@ -63,13 +63,13 @@ export function mountHome(): () => void {
   const form = $<HTMLFormElement>("chat-form"), stats = $("viz-stats"), empty = $("viz-empty");
   let chats: ChatInfo[] = [], current = 0, busy = false, ctrl: AbortController | null = null, dead = false;
   let map = loadMap();
-  const graph: GraphHandle = mountGraph($<HTMLCanvasElement>("graph"), $("graph-tip"), { onPick: (id) => void open(id), onCollapse: (ids) => { map = { ...map, collapsed: ids }; saveMap(map); },
+  const graph: GraphHandle = mountGraph($<HTMLCanvasElement>("graph"), $("graph-tip"), { onPick: (id) => void open(id), onMore: (id) => moreOf(id - AREA_OFF), onCollapse: (ids) => { map = { ...map, collapsed: ids }; saveMap(map); },
     onSystem: (id) => { if (id.startsWith("chat:")) { void open(Number(id.slice(5))); graph.focus("chat:" + id.slice(5)); return; } if (id === "key" || id === "model" || id === "db") window.dispatchEvent(new CustomEvent("yaeori:goto", { detail: { page: "settings", section: id === "key" ? "conn" : id === "model" ? "model" : "memory" } })); else if (id === "palette") { panel.hidden = false; $("viz-toggle").setAttribute("aria-expanded", "true"); } },
     onShowEnd: () => { $("viz-show").setAttribute("aria-pressed", "false"); $("viz-show").textContent = "▷ Показ"; } }, map);
   const panel = $("viz-panel");
   let lastBrain: GraphData | null = null;
   let vec: VecInfo | null = null, building = false;
-  const list = mountList($("viz-list"), { openChat: (id) => void open(id), focus: (t) => graph.focus(t), pin: (t) => graph.pin(t), kinds: (k) => graph.setLinkKinds(k),
+  const list = mountList($("viz-list"), { more: (id) => moreOf(id), openChat: (id) => void open(id), focus: (t) => graph.focus(t), pin: (t) => graph.pin(t), kinds: (k) => graph.setLinkKinds(k),
     edit: (id, p) => updateMemory(id, p).then(() => refreshGraph()), forget: (id) => forgetMemory(id).then(() => refreshGraph()),
     review: () => reviewMemories(), merge: (k, d, hs) => mergeMemories(k, d, hs).then(() => refreshGraph()),
     compress: (ids, text, topic) => compressMemories(ids, text, topic).then(() => refreshGraph()),
@@ -134,13 +134,16 @@ export function mountHome(): () => void {
     messages: [...c.messages, ...b.messages.map((m) => ({ ...m, id: NEURON_OFF + m.id, chatId: AREA_OFF + m.chatId }))],
     links: [...c.links, ...b.links.map((l) => ({ ...l, a: NEURON_OFF + l.a, b: NEURON_OFF + l.b }))],
   });
+  /** Крупная тема на карте показана не целиком: по запросу подгружаем её остальные воспоминания. */
+  const openTopics = new Set<string>();
+  const moreOf = (areaId: number) => { const t = lastBrain?.chats.find((c) => c.id === areaId)?.title; if (!t || openTopics.has(t)) return; openTopics.add(t); void refreshGraph(); };
   async function refreshGraph() {
     try {
-      const [br, ch] = await Promise.all([getBrain().catch(() => null), getGraph()]); if (dead) return;
+      const [br, ch] = await Promise.all([getBrain([...openTopics]).catch(() => null), getGraph()]); if (dead) return;
       const g = br ? mergeMap(br, ch) : ch, nn = br?.messages.length ?? 0;
       graph.update(g); void getEntities().then((r) => { if (!dead) graph.setEntities(r.items); }, () => { /* без сущностей карта работает */ }); graph.select(current || null); lastBrain = br; syncList(); void pollVec();
       const st = g.stats, chatMsgs = ch.messages.length;
-      stats.innerHTML = `<i class="live"></i><span${st ? ` title="${st.next ? `До следующего уровня: ${st.next - st.memories}` : "Высший уровень"}"` : ""}>${nn} воспом. · ${st?.topics ?? 0} тем · ${chatMsgs} сообщ. · ${ch.chats.length} чатов${st ? ` · «${esc(st.levelName)}»` : ""}</span>`;
+      stats.innerHTML = `<i class="live"></i><span${st ? ` title="${st.next ? `До следующего уровня: ${st.next - st.memories}` : "Высший уровень"}"` : ""}>${st?.memories ?? nn} воспом. · ${st?.topics ?? 0} тем · ${chatMsgs} сообщ. · ${ch.chats.length} чатов${st ? ` · «${esc(st.levelName)}»` : ""}</span>`;
       empty.hidden = g.messages.length > 0;
       $("viz-empty-text").textContent = "Пока пусто. Карта растёт, пока вы общаетесь: Yaeori запоминает факты и копит беседы.";
       $("viz-scan").hidden = nn > 0 || chats.length === 0;

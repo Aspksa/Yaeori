@@ -44,7 +44,7 @@ const ICONS: Record<SysItem["icon"], string> = {
 const PATHS = Object.fromEntries(Object.entries(ICONS).map(([k, d]) => [k, new Path2D(d)])) as Record<SysItem["icon"], Path2D>;
 
 type Kind = "core" | "hub" | "msg" | "sys";
-interface N { key: string; kind: Kind; id: number; chatId: number; grp: string; role?: "user" | "assistant"; text: string; size: number; at: string; x: number; y: number; tx: number; ty: number; vx: number; vy: number; born: number; hue: number; visible: boolean; key2?: boolean; sys?: SysItem; tier?: string; hits?: number; src?: number; shown?: boolean }
+interface N { key: string; kind: Kind; id: number; chatId: number; grp: string; role?: "user" | "assistant"; text: string; size: number; at: string; x: number; y: number; tx: number; ty: number; vx: number; vy: number; born: number; hue: number; visible: boolean; key2?: boolean; sys?: SysItem; tier?: string; hits?: number; src?: number; shown?: boolean; more?: number }
 export interface GraphHandle {
   destroy(): void; update(d: GraphData): void; select(chatId: number | null): void;
   setOptions(p: Partial<MapOptions>): void; options(): MapOptions; setSystem(items: SysItem[]): void;
@@ -52,7 +52,7 @@ export interface GraphHandle {
   /** Импульс по цепочке узлов: "core", "chat:ID", "mem:ID" (через свою тему). col: кто посылает. */
   flow(path: string[], col: Col, delay?: number): void; flash(tokens: string[], col: Col): void; think(on: boolean): void; focus(token: string): void; pin(tokens: string[]): void; setLinkKinds(kinds: string[]): void; setEntities(list: EntityInfo[]): void;
 }
-interface Callbacks { onPick: (chatId: number) => void; onCollapse?: (keys: string[]) => void; onSystem?: (id: string) => void; onEntity?: (id: number | null) => void; onShowEnd?: () => void }
+interface Callbacks { onPick: (chatId: number) => void; onMore?: (chatId: number) => void; onCollapse?: (keys: string[]) => void; onSystem?: (id: string) => void; onEntity?: (id: number | null) => void; onShowEnd?: () => void }
 
 export const AREA_OFF = 1_000_000, NEURON_OFF = 1_000_000_000;
 const R = 300, MONO = "ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace", SANS = "Inter,system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif", TAU = Math.PI * 2;
@@ -113,21 +113,21 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     const keep = new Set<string>(["core"]);
     if (!nodes.has("core")) nodes.set("core", mk("core", "core", { text: "Yaeori" }));
     // группы: чаты или дни
-    interface G { key: string; label: string; count: number; chatId: number }
+    interface G { key: string; label: string; count: number; chatId: number; more?: number }
     const groups: G[] = [];
-    if (o.group === "chat") for (const c of data.chats) groups.push({ key: "c" + c.id, label: c.title, count: c.count, chatId: c.id });
+    if (o.group === "chat") for (const c of data.chats) groups.push({ key: "c" + c.id, label: c.title, count: c.count, chatId: c.id, more: c.hidden });
     else {
       const byDay = new Map<string, G>();
       for (const m of data.messages) { if (m.tier !== undefined) continue; const k = "d" + dayKey(m.at), g = byDay.get(k) ?? { key: k, label: dayLabel(k.slice(1)), count: 0, chatId: m.chatId }; g.count++; g.chatId = m.chatId; byDay.set(k, g); }
       groups.push(...[...byDay.values()].slice(-12));
-      for (const c of data.chats) if (c.id >= AREA_OFF) groups.push({ key: "c" + c.id, label: c.title, count: c.count, chatId: c.id });
+      for (const c of data.chats) if (c.id >= AREA_OFF) groups.push({ key: "c" + c.id, label: c.title, count: c.count, chatId: c.id, more: c.hidden });
     }
     const gKey = (m: GraphData["messages"][number]) => (o.group === "chat" || m.tier !== undefined ? "c" + m.chatId : "d" + dayKey(m.at));
     groups.forEach((g, i) => {
       keep.add("h" + g.key);
       let n = nodes.get("h" + g.key);
       if (!n) { const a = (i / Math.max(groups.length, 1)) * TAU; n = mk("h" + g.key, "hub", { grp: g.key, x: Math.cos(a) * 40, y: Math.sin(a) * 40 }); nodes.set(n.key, n); }
-      Object.assign(n, { text: g.label, size: g.count, hue: i, chatId: g.chatId, id: g.chatId });
+      Object.assign(n, { text: g.label, size: g.count, hue: i, chatId: g.chatId, id: g.chatId, more: g.more ?? 0 });
     });
     const lastOf = new Map<string, number>();
     for (const m of data.messages) lastOf.set(gKey(m), m.id);
@@ -392,7 +392,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     // подписи узлов без наложений: сначала важные (наведённые, выбранные, отделы по размеру), остальные пропускаем, если место занято
     const placed: [number, number, number, number][] = [], labelOk = new Set<string>();
     const tryPlace = (x0: number, y0: number, wd: number, ht: number) => { for (const q of placed) if (x0 < q[0] + q[2] && x0 + wd > q[0] && y0 < q[1] + q[3] && y0 + ht > q[1]) return false; placed.push([x0, y0, wd, ht]); return true; };
-    const hubLabel = (n: N) => { const lim = o.layout === "tile" ? 12 : 22; return (n.text.length > lim ? n.text.slice(0, lim - 1) + "…" : n.text) + (o.collapsed.includes(n.key) ? `  +${n.size}` : ""); };
+    const hubLabel = (n: N) => { const lim = o.layout === "tile" ? 12 : 22; return (n.text.length > lim ? n.text.slice(0, lim - 1) + "…" : n.text) + (o.collapsed.includes(n.key) ? `  +${n.size}` : n.more ? `  +${n.more}` : ""); };
     ctx.textRendering = "optimizeLegibility";
     for (const n of order.filter((x) => x.kind === "hub" && x.visible).sort((a, b) => Number(b === hover) - Number(a === hover) || Number(b.chatId === selected) - Number(a.chatId === selected) || Number(isArea(b)) - Number(isArea(a)) || b.size - a.size)) {
       const p = toScreen(n.x, n.y), r = Math.max(3, radius(n) * cam.k); ctx.font = `${isArea(n) ? 600 : 500} ${isArea(n) ? 12.5 : 11}px ${SANS}`;
@@ -491,7 +491,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       const links = hover.kind === "msg" ? data.links.filter((l) => l.a === hover!.id || l.b === hover!.id) : [];
       const words = [...new Set(links.flatMap((l) => l.words))].slice(0, 4);
       const TIERS: Record<string, string> = { fresh: "Свежая память", long: "Долгая память", fading: "Забывается", plain: "Воспоминание" };
-      tip.innerHTML = hover.kind === "hub" ? `<strong></strong><small>${hover.size} ${isArea(hover) ? "воспомин." : "сообщ."}</small><span>Двойной щелчок — свернуть или развернуть</span>`
+      tip.innerHTML = hover.kind === "hub" ? `<strong></strong><small>${hover.size} ${isArea(hover) ? "воспомин." : "сообщ."}</small><span>${hover.more ? `Двойной щелчок — показать ещё ${hover.more}` : "Двойной щелчок — свернуть или развернуть"}</span>`
         : hover.kind === "sys" ? `<strong></strong><small></small>`
         : neu(hover) ? `<strong>${TIERS[hover.tier ?? "plain"]}</strong><small>Подтверждено ×${hover.hits ?? 1} · ${new Date(hover.at).toLocaleDateString("ru-RU")}</small><span></span>${words.length ? `<em></em>` : ""}`
         : `<strong>${hover.role === "user" ? "Вы" : "Yaeori"}</strong><small>${new Date(hover.at).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })}</small><span></span>${words.length ? `<em></em>` : ""}`;
@@ -515,7 +515,8 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   });
   canvas.addEventListener("pointerleave", () => { mouse = null; });
   canvas.addEventListener("dblclick", () => {
-    if (hover?.kind === "hub") { const k = hover.key; o = { ...o, collapsed: o.collapsed.includes(k) ? o.collapsed.filter((x) => x !== k) : [...o.collapsed, k] }; cb.onCollapse?.(o.collapsed); }
+    if (hover?.kind === "hub" && hover.more && cb.onMore) cb.onMore(hover.chatId);
+    else if (hover?.kind === "hub") { const k = hover.key; o = { ...o, collapsed: o.collapsed.includes(k) ? o.collapsed.filter((x) => x !== k) : [...o.collapsed, k] }; cb.onCollapse?.(o.collapsed); }
     else if (!hover) fit();
   });
   canvas.addEventListener("wheel", (e) => {

@@ -82,7 +82,7 @@ export function createApp({ root, db, dist = null }) {
     const a = txt.indexOf("["), b = txt.lastIndexOf("]"); if (a < 0 || b <= a) return [];
     try { const arr = JSON.parse(txt.slice(a, b + 1)); return Array.isArray(arr) ? arr : []; } catch { return []; }
   };
-  const topicHint = () => { const t = db.memGraph().chats.map((c) => c.title); return t.length ? "Если подходит, бери уже существующие темы: " + t.join(", ") + "." : ""; };
+  const topicHint = () => { const t = db.topicNames(24); return t.length ? "Если подходит, бери уже существующие темы: " + t.join(", ") + "." : ""; };
   /** Выделяет факты из одной реплики и сохраняет. Ошибка не мешает чату. */
   async function learn(s, model, id, userText, reply) {
     try {
@@ -116,6 +116,19 @@ export function createApp({ root, db, dist = null }) {
       if (txt?.trim().length >= 20) db.setSummary(id, txt.trim(), cover[cover.length - 1].id);
     } catch { /* резюме не обязательно */ } finally { sumBusy.delete(id); }
   }
+  const digestNote = () => { const d = db.topicDigest(6); return d.length ? "\n\nОбщая картина того, что ты знаешь о собеседнике по темам (кратко, для ориентира):\n" + d.map((x) => `- ${x.topic} (${x.count}): ${x.text}`).join("\n") : ""; };
+  /** Сводки по крупным темам: пара предложений вместо десятков фактов. Обновляются, когда тема заметно выросла. */
+  let topicBusy = false;
+  async function summarizeTopics(s) {
+    if (topicBusy) return; topicBusy = true;
+    try {
+      for (const t of db.topicsToSummarize()) {
+        const sys = "Ты сжимаешь воспоминания об одном человеке по одной теме. Напиши сводку: 2–3 предложения, до 300 символов, по-русски, только то, что есть в списке, без вступлений и без выдумок.";
+        const txt = await askModel(s, s.model, sys, `Тема: ${t.topic}\nВоспоминания:\n${t.texts.map((x) => "- " + x).join("\n")}`, 300);
+        if (txt?.trim().length >= 20) db.setTopicSummary(t.topic, txt.trim().replace(/\s+/g, " "), t.n);
+      }
+    } catch { /* сводки не обязательны */ } finally { topicBusy = false; }
+  }
   const memoryNote = (mem) => {
     if (!mem.length) return "";
     return "\n\nТы помнишь о собеседнике из прошлых бесед (используй естественно, не пересказывай список):\n" + mem.map((m) => "- " + m.text + (m.past ? ` (было раньше${m.validTo ? ", до " + m.validTo : ""}, сейчас уже не так)` : "")).join("\n");
@@ -133,7 +146,7 @@ export function createApp({ root, db, dist = null }) {
     if (!s.model) { send(other("NO_MODEL")); return res.end(); }
     const ctrl = new AbortController();
     res.on("close", () => ctrl.abort());
-    const sum = db.getSummary(id), history = (sum ? db.messagesAfter(id, sum.upto, 24) : db.recent(id, 20)).map((m) => ({ role: m.role, content: m.content })), mem = s.memory !== false ? db.recall(text, 12, await embed(s, [text], 6000).then((v) => v[0]).catch(() => null), id) : [], system = SYSTEM + memoryNote(mem) + (sum ? "\n\nКратко о том, что было раньше в этой беседе: " + sum.text : "");
+    const sum = db.getSummary(id), history = (sum ? db.messagesAfter(id, sum.upto, 24) : db.recent(id, 20)).map((m) => ({ role: m.role, content: m.content })), mem = s.memory !== false ? db.recall(text, 12, await embed(s, [text], 6000).then((v) => v[0]).catch(() => null), id) : [], system = SYSTEM + memoryNote(mem) + (s.memory !== false ? digestNote() : "") + (sum ? "\n\nКратко о том, что было раньше в этой беседе: " + sum.text : "");
     if (mem.length) send({ recalled: mem.map((m) => ({ id: m.id, text: m.text, hop: Boolean(m.hop), session: Boolean(m.session), past: Boolean(m.past) })) });
     const order = [s.model, ...(s.fallbackModel && s.fallbackModel !== s.model ? [s.fallbackModel] : [])];
     let lastErr = null;
@@ -228,7 +241,7 @@ export function createApp({ root, db, dist = null }) {
       if (!origin || new URL(origin).host !== req.headers.host) return json(res, 403, { error: "Запрос с чужого адреса отклонён" });
     }
     if (pathname === "/api/graph" || pathname.startsWith("/api/chats")) return chats(req, res, pathname);
-    if (pathname === "/api/brain" && req.method === "GET") return json(res, 200, db.memGraph());
+    if (pathname === "/api/brain" && req.method === "GET") { const open = (new URL(req.url ?? "/", "http://x").searchParams.get("open") ?? "").split(",").map((x) => x.trim()).filter(Boolean).slice(0, 16); return json(res, 200, db.memGraph({ open })); }
     if (pathname === "/api/memories" && req.method === "GET") return json(res, 200, { memory: read().memory !== false, total: db.countMemories(), items: db.listMemories().slice(0, 100).map((m) => ({ id: m.id, text: m.text, topics: m.topics, hits: m.strength, at: m.at })) });
     if (pathname === "/api/vectors" && req.method === "GET") { const s = read(); return json(res, 200, { ...db.vecStats(), model: s.embedModel || embedState.model || embedAuto.model || "", ok: embedState.ok, error: embedState.error }); }
     if (pathname === "/api/vectors/build" && req.method === "POST") {
@@ -339,6 +352,7 @@ export function createApp({ root, db, dist = null }) {
   const tick = async () => {
     db.decay();
     const s = read(); if (tickBusy || !s.key || s.memory === false) return;
+    void summarizeTopics(s);
     const st = db.vecStats(); if (!(st.total > st.indexed)) return;
     tickBusy = true; try { for (let i = 0; i < 40; i++) { const n = await indexVectors(s, 128); if (!n) break; } } finally { tickBusy = false; }
   };

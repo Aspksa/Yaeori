@@ -17,6 +17,7 @@ export async function openDb(root) {
   try { const cols = store.cols("memories"); if (!cols.includes("vec")) db.run("ALTER TABLE memories ADD COLUMN vec TEXT"); if (!cols.includes("pinned")) db.run("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"); if (!cols.includes("state")) db.run("ALTER TABLE memories ADD COLUMN state TEXT"); if (!cols.includes("replaced_by")) db.run("ALTER TABLE memories ADD COLUMN replaced_by INTEGER"); if (!cols.includes("used_at")) db.run("ALTER TABLE memories ADD COLUMN used_at TEXT"); if (!cols.includes("valid_from")) db.run("ALTER TABLE memories ADD COLUMN valid_from TEXT"); if (!cols.includes("valid_to")) db.run("ALTER TABLE memories ADD COLUMN valid_to TEXT"); } catch { /* уже есть */ }
   db.run("CREATE TABLE IF NOT EXISTS vectors (memory_id INTEGER PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE, data BLOB NOT NULL)");
   db.run("CREATE TABLE IF NOT EXISTS chat_summaries (chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE, text TEXT NOT NULL, upto INTEGER NOT NULL, updated_at TEXT NOT NULL)");
+  db.run("CREATE TABLE IF NOT EXISTS topic_summaries (topic TEXT PRIMARY KEY, text TEXT NOT NULL, n INTEGER NOT NULL, updated_at TEXT NOT NULL)");
   db.run("CREATE TABLE IF NOT EXISTS entities (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, key TEXT NOT NULL UNIQUE)");
   db.run("CREATE TABLE IF NOT EXISTS mem_entities (memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE, entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, PRIMARY KEY (memory_id, entity_id))");
   db.run("CREATE TABLE IF NOT EXISTS relations (id INTEGER PRIMARY KEY AUTOINCREMENT, subj INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, rel TEXT NOT NULL, obj INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, memory_id INTEGER REFERENCES memories(id) ON DELETE CASCADE)");
@@ -284,7 +285,7 @@ export async function openDb(root) {
       const ids = new Set(d.chats.map((c) => Number(c?.id)));
       try {
         db.run("BEGIN");
-        db.run("DELETE FROM memories"); db.run("DELETE FROM entities"); db.run("DELETE FROM messages"); db.run("DELETE FROM chats");
+        db.run("DELETE FROM memories"); db.run("DELETE FROM topic_summaries"); db.run("DELETE FROM entities"); db.run("DELETE FROM messages"); db.run("DELETE FROM chats");
         for (const c of d.chats) db.run("INSERT INTO chats(id, title, created_at) VALUES (?, ?, ?)", [Number(c.id), S(c.title, 80) || "Чат", S(c.createdAt, 40) || now()]);
         let nm = 0; for (const m of d.messages) { if (!ids.has(Number(m?.chatId)) || (m.role !== "user" && m.role !== "assistant")) continue; db.run("INSERT INTO messages(id, chat_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)", [Number(m.id), Number(m.chatId), m.role, S(m.content, 200000), S(m.createdAt, 40) || now()]); nm++; }
         let nmem = 0; for (const m of d.memories) { const text = S(m?.text, 200).trim(), topics = cleanTopics(Array.isArray(m?.topics) ? m.topics : String(m?.topics ?? "").split(",")); if (text.length < 3 || !topics.length) continue; db.run("INSERT INTO memories(id, text, topics, kind, strength, chat_id, created_at, updated_at, pinned, state, replaced_by, used_at, valid_from, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [Number(m.id), text, topics.join(","), m.kind === "note" ? "note" : "fact", Math.min(20, Math.max(1, Number(m.strength) || 1)), ids.has(Number(m.chatId)) ? Number(m.chatId) : null, S(m.createdAt, 40) || now(), S(m.updatedAt ?? m.at, 40) || now(), m.pinned ? 1 : 0, m.state === "archived" || m.state === "replaced" ? m.state : null, Number.isInteger(m.replacedBy) ? m.replacedBy : null, S(m.usedAt, 40) || null, vdate(m.validFrom), vdate(m.validTo)]); if (Array.isArray(m.entities) || Array.isArray(m.rels)) { linkEntities(Number(m.id), m.entities, null); for (const r of (Array.isArray(m.rels) ? m.rels : []).slice(0, 5)) linkEntities(Number(m.id), [], r); } nmem++; }
@@ -314,7 +315,19 @@ export async function openDb(root) {
       save(); return { ok: true, merged: drops.length };
     },
     deleteMemory: (id) => { db.run("DELETE FROM memories WHERE id = ?", [id]); vecs.delete(id); save(); },
-    clearMemories: () => { db.run("DELETE FROM memories"); vecs.clear(); save(); },
+    clearMemories: () => { db.run("DELETE FROM memories"); db.run("DELETE FROM topic_summaries"); vecs.clear(); save(); },
+    /** Темы по весу (для подсказки модели при записи): дёшево, без построения карты. */
+    topicNames: (n = 24) => { const w = new Map(); for (const m of memRows()) m.topics.forEach((t, i) => w.set(t, (w.get(t) ?? 0) + m.strength * (i === 0 ? 1 : 0.4))); return [...w].sort((a, b) => b[1] - a[1]).slice(0, n).map(([t]) => t); },
+    /** Сводки по темам: тема считается по первой теме воспоминания. Нужна новая, если воспоминаний стало заметно больше или тема ещё без сводки. */
+    topicsToSummarize: ({ min = 8, delta = 5, limit = 3 } = {}) => {
+      const by = new Map(); for (const m of memRows()) { const t = m.topics[0]; by.set(t, [...(by.get(t) ?? []), m]); }
+      const have = new Map(rows("SELECT topic, n FROM topic_summaries").map((r) => [r.topic, r.n]));
+      return [...by].filter(([t, ms]) => ms.length >= min && (!have.has(t) || ms.length - have.get(t) >= delta)).sort((a, b) => b[1].length - a[1].length).slice(0, limit)
+        .map(([topic, ms]) => ({ topic, n: ms.length, texts: ms.slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.strength - a.strength).slice(0, 40).map((m) => m.text) }));
+    },
+    setTopicSummary: (topic, text, n) => { db.run("INSERT INTO topic_summaries(topic, text, n, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(topic) DO UPDATE SET text = excluded.text, n = excluded.n, updated_at = excluded.updated_at", [topic, String(text).slice(0, 400), n, now()]); store.save(); },
+    /** Крупнейшие темы со сводками: всегда в контексте модели, чтобы она знала общую картину, даже если вспомнить дословно нечего. */
+    topicDigest: (limit = 6) => { const c = new Map(); for (const m of memRows()) c.set(m.topics[0], (c.get(m.topics[0]) ?? 0) + 1); return rows("SELECT topic, text FROM topic_summaries").filter((r) => c.has(r.topic)).sort((a, b) => c.get(b.topic) - c.get(a.topic)).slice(0, limit).map((r) => ({ topic: r.topic, text: r.text, count: c.get(r.topic) })); },
     countMemories: () => rows("SELECT count(*) AS n FROM memories WHERE state IS NULL")[0].n,
     /** Последние реплики из всех чатов для сканирования старых бесед. */
     transcript: (limit = 60) => rows("SELECT chat_id AS chatId, role, content FROM (SELECT id, chat_id, role, content FROM messages ORDER BY id DESC LIMIT ?) ORDER BY id", [limit]),
@@ -322,13 +335,18 @@ export async function openDb(root) {
      * Мозг: темы — узлы-центры, факты — точки вокруг своей темы. Связь — два факта из РАЗНЫХ тем, у которых есть общая тема.
      * Рост: size и сила факта растут с повторами; «strong» у тех, что подтверждались несколько раз.
      */
-    memGraph: () => {
-      const all = memRows().slice(0, 400), weight = new Map();
-      for (const m of all) m.topics.forEach((t, i) => weight.set(t, (weight.get(t) ?? 0) + m.strength * (i === 0 ? 1 : 0.4)));
+    memGraph: ({ open = [], perTopic = 14, openCap = 150 } = {}) => {
+      const everyone = memRows(), weight = new Map(), openSet = new Set((Array.isArray(open) ? open : []).map(norm));
+      for (const m of everyone) m.topics.forEach((t, i) => weight.set(t, (weight.get(t) ?? 0) + m.strength * (i === 0 ? 1 : 0.4)));
       const top = [...weight].sort((a, b) => b[1] - a[1]).slice(0, 16).map(([t]) => t), id = new Map(top.map((t, i) => [t, i + 1]));
-      const mems = []; 
-      for (const m of all) { const g = m.topics.find((t) => id.has(t)); if (g) mems.push({ ...m, grp: id.get(g) }); }
-      const chats = top.map((t) => ({ id: id.get(t), title: t, count: mems.filter((m) => m.grp === id.get(t)).length })).filter((c) => c.count > 0);
+      // Рост: если памяти много, на карте у каждой темы самые важные воспоминания; остальные раскрываются по запросу (open)
+      const groups = new Map(); for (const m of everyone) { const g = m.topics.find((t) => id.has(t)); if (g) groups.set(g, [...(groups.get(g) ?? []), m]); }
+      const small = everyone.length <= 300, totals = new Map(), mems = [];
+      const rank = (a, b) => Number(b.pinned) - Number(a.pinned) || b.strength - a.strength || Date.parse(b.at) - Date.parse(a.at);
+      for (const [g, ms] of groups) { totals.set(g, ms.length); const cap = small ? Infinity : openSet.has(g) ? openCap : perTopic; for (const m of (ms.length > cap ? ms.slice().sort(rank).slice(0, cap) : ms)) mems.push({ ...m, grp: id.get(g) }); }
+      const all = everyone;
+      const sums = new Map(rows("SELECT topic, text FROM topic_summaries").map((r) => [r.topic, r.text])), shown = new Map(); for (const m of mems) shown.set(m.grp, (shown.get(m.grp) ?? 0) + 1);
+      const chats = top.map((t) => { const sh = shown.get(id.get(t)) ?? 0, tot = totals.get(t) ?? 0; return { id: id.get(t), title: t, count: tot, hidden: Math.max(0, tot - sh), ...(sums.has(t) ? { summary: sums.get(t) } : {}) }; }).filter((c) => c.count > 0);
       const day = 86400000, t = Date.now(), tierOf = (m) => { const age = (t - Date.parse(m.at)) / day; return m.pinned || m.strength >= 3 ? "long" : age <= 3 ? "fresh" : age > 14 ? "fading" : "plain"; };
       const messages = mems.map((m) => ({ id: m.id, chatId: m.grp, role: m.kind === "fact" ? "user" : "assistant", preview: m.text, size: Math.round(40 * m.strength), at: m.createdAt, upd: m.at, tier: tierOf(m), pinned: m.pinned, hits: m.strength, src: m.chatId ?? 0, topics: m.topics, past: Boolean(m.validTo && Date.parse(m.validTo) < t) }));
       const byTopic = new Map(); for (const m of mems) for (const t of m.topics) byTopic.set(t, [...(byTopic.get(t) ?? []), m]);
@@ -347,7 +365,7 @@ export async function openDb(root) {
       for (const ms of byChat.values()) { ms.sort((x, y) => x.id - y.id); for (let i = 1; i < ms.length; i++) { const a = ms[i - 1], b = ms[i]; if (a.grp === b.grp) continue; const k = Math.min(a.id, b.id) + ":" + Math.max(a.id, b.id), cur = pairs.get(k); if (cur) { if (!cur.kinds.includes("chat")) cur.kinds.push("chat"); } else pairs.set(k, { a: a.id, b: b.id, w: 0.8, words: ["из одной беседы"], kinds: ["chat"] }); } }
       const links = [...pairs.values()].sort((x, y) => y.w - x.w).slice(0, 160), total = all.length, STAGES = [[0, "Зародыш"], [5, "Росток"], [20, "Ученик"], [60, "Знаток"], [150, "Мудрец"]];
       let lv = 0; STAGES.forEach(([n], i) => { if (total >= n) lv = i; });
-      return { mode: "memory", chats, messages, links, stats: { memories: total, topics: chats.length, links: links.length, level: lv + 1, levelName: STAGES[lv][1], next: STAGES[lv + 1]?.[0] ?? null } };
+      return { mode: "memory", chats, messages, links, stats: { memories: total, topics: weight.size, links: links.length, level: lv + 1, levelName: STAGES[lv][1], next: STAGES[lv + 1]?.[0] ?? null } };
     },
     graph: () => {
       const chats = rows("SELECT c.id, c.title, (SELECT count(*) FROM messages m WHERE m.chat_id = c.id) AS count FROM chats c ORDER BY c.id DESC LIMIT 12");
