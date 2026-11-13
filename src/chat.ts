@@ -1,4 +1,4 @@
-import { getClusters, getAsOf, getHypotheses, getDisputes, getRecallCfg, resolveDispute, setRecallCfg, confirmMemory, correctMemory, getSleep, runSleep, createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
+import { getClusters, getAsOf, getReminders, ackReminders, getHypotheses, getDisputes, getRecallCfg, resolveDispute, setRecallCfg, confirmMemory, correctMemory, getSleep, runSleep, createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
 import { mountList } from "./list";
 import { esc as mdEsc, renderText } from "./md";
 export { renderText };
@@ -230,11 +230,12 @@ export function mountHome(): () => void {
         if (e.delta) { if (!answered) { answered = true; graph.think(false); graph.flow(["core", "chat:" + id], "bot"); } acc += e.delta; if (!frame) frame = requestAnimationFrame(paint); }
         if (e.tool) { const n = document.createElement("div"); n.className = "msg notice"; n.textContent = "🔧 " + e.tool.text; thread.insertBefore(n, out); if (e.tool.changed) void refreshGraph(); }
         if (e.notice) { const n = document.createElement("div"); n.className = "msg notice"; n.textContent = e.notice; thread.insertBefore(n, out); }
+        if (e.check?.length) { const n = document.createElement("div"); n.className = "msg notice warn"; n.textContent = "⚠ Проверка: ответ может спорить с тем, что я знаю — " + e.check.map((c) => `«${c.text.slice(0, 80)}»${c.why ? " (" + c.why + ")" : ""}`).join("; "); thread.appendChild(n); }
         if (e.error) { graph.think(false); failed = true; out.className = "msg error"; out.innerHTML = errorHtml(e); }
         if (e.done) { finished = true; if (frame) { cancelAnimationFrame(frame); frame = 0; } shown = acc.length; paint(); if (ctrl === my) setBusy(false); }
         if (e.brain) {
           const b = e.brain, n = document.createElement("div"); n.className = "msg notice";
-          if (b.error) n.textContent = `Память не обновилась: ${b.error.error ?? "ошибка"}`; else if (b.added || b.strengthened) n.textContent = `Мозг: запомнила ${b.added ?? 0}, закрепила ${b.strengthened ?? 0}`;
+          if (b.error) n.textContent = `Память не обновилась: ${b.error.error ?? "ошибка"}`; else if (b.added || b.strengthened || b.updated || b.closed || b.doubted) n.textContent = `Мозг: запомнила ${b.added ?? 0}, закрепила ${b.strengthened ?? 0}${b.updated ? `, обновила ${b.updated}` : ""}${b.closed ? `, закрыла устаревшее ${b.closed}` : ""}${b.doubted ? `, усомнилась в ${b.doubted}` : ""}`;
           if (n.textContent) { thread.appendChild(n); thread.scrollTop = thread.scrollHeight; }
           void refreshGraph().then(() => {
             (b.addedIds ?? []).forEach((x, i) => graph.flow(["chat:" + id, "core", "mem:" + x], "mint", i * 180));
@@ -272,5 +273,15 @@ export function mountHome(): () => void {
     } catch { bubble("error", "Сервер не отвечает. Запустите Yaeori через Yaeori.bat."); }
   })();
 
-  return () => { dead = true; clearTimeout(vecTimer); ctrl?.abort(); graph.destroy(); };
+  /** Сроки: раз в несколько минут спрашиваем, не подошёл ли срок у чего-то записанного. */
+  const pollReminders = async () => {
+    try {
+      const r = await getReminders(); if (dead || !r.items.length) return;
+      for (const x of r.items) { const n = document.createElement("div"); n.className = "msg notice warn"; n.textContent = `⏰ ${x.overdue ? "Срок прошёл" : "Скоро срок"} (${x.due}): ${x.text}`; thread.appendChild(n); }
+      thread.scrollTop = thread.scrollHeight; await ackReminders(r.items.map((x) => x.id));
+    } catch { /* без напоминаний чат работает */ }
+  };
+  setTimeout(() => void pollReminders(), 1500); const remTimer = setInterval(() => void pollReminders(), 300000);
+
+  return () => { dead = true; clearInterval(remTimer); clearTimeout(vecTimer); ctrl?.abort(); graph.destroy(); };
 }
