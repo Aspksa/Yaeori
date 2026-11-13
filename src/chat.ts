@@ -100,6 +100,12 @@ export function mountHome(): () => void {
     }
   });
 
+  const errorHtml = (e: { error?: string; hint?: string; code?: number | string; detail?: string }) => {
+    const fixKey = [401, 403, "NO_KEY"].includes(e.code as never), fixModel = [404, 409, 422, "NO_MODEL"].includes(e.code as never);
+    return `<strong>${esc(e.error ?? "Ошибка")}</strong>${e.hint ? `<span class="err-hint">${esc(e.hint)}</span>` : ""}${e.detail ? `<small class="err-detail">Ответ сервиса: ${esc(e.detail)}</small>` : ""}`
+      + (fixKey || fixModel ? `<button class="btn small err-go" data-goto="${fixKey ? "conn" : "model"}">Открыть «${fixKey ? "Подключение" : "Модель"}»</button>` : "");
+  };
+  thread.addEventListener("click", (ev) => { const b = (ev.target as HTMLElement).closest<HTMLElement>("[data-goto]"); if (b) window.dispatchEvent(new CustomEvent("yaeori:goto", { detail: { page: "settings", section: b.dataset.goto } })); });
   const bubble = (role: "user" | "assistant" | "error", html: string) => {
     const d = document.createElement("div"); d.className = "msg " + role; d.innerHTML = html; thread.appendChild(d);
     thread.scrollTop = thread.scrollHeight; return d;
@@ -160,9 +166,10 @@ export function mountHome(): () => void {
       await sendMessage(id, text, (e) => {
         if (e.user) void refreshGraph();
         if (e.delta) { acc += e.delta; if (!frame) frame = requestAnimationFrame(paint); }
-        if (e.error) { failed = true; out.className = "msg error"; out.textContent = e.error; }
+        if (e.notice) { const n = document.createElement("div"); n.className = "msg notice"; n.textContent = e.notice; thread.insertBefore(n, out); }
+        if (e.error) { failed = true; out.className = "msg error"; out.innerHTML = errorHtml(e); }
       }, ctrl.signal);
-    } catch (e) { if ((e as Error).name !== "AbortError") { failed = true; out.className = "msg error"; out.textContent = (e as Error).message; } }
+    } catch (e) { if ((e as Error).name !== "AbortError") { failed = true; out.className = "msg error"; out.innerHTML = errorHtml({ error: (e as Error).message }); } }
     if (frame) cancelAnimationFrame(frame);
     if (!failed) paint(); else if (!acc) { /* сообщение об ошибке уже в пузыре */ }
     ctrl = null; if (!dead) { setBusy(false); void refreshChats(); void refreshGraph(); }

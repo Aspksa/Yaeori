@@ -1,5 +1,5 @@
 import { ACCENTS, swatchColor, type AccentId, type Theme } from "./accents";
-import { checkConn, getConn, saveConn, type Conn } from "./api";
+import { checkConn, getConn, getGuide, saveConn, testModel, type Conn, type Explained, type Guide, type TestResult } from "./api";
 import { DEFAULT_PREFS, clean, type Density, type Prefs, type Radius, type TextSize } from "./prefs";
 import pkg from "../package.json";
 
@@ -27,6 +27,8 @@ const seg = <T extends string>(name: string, label: string, opts: [T, string][],
 // Черновики полей переживают перерисовку, пока их не сохранили.
 const drafts = new Map<string, string>();
 let conn: Conn | null = null, connError = "", status = "", models: string[] = [], busy = false;
+let mq = "", problem: Explained | null = null, guide: Guide | null = null, autoChecked = false, listing = false;
+const tests: Record<string, TestResult | "wait"> = {};
 
 function card(s: Section, collapsed: boolean, body: string) {
   return `<section class="card set-card${collapsed ? " collapsed" : ""}" id="set-${s.id}" data-title="${esc(s.title)}" data-search="${esc((s.title + " " + s.keywords + " " + s.lead).toLowerCase())}">
@@ -44,18 +46,59 @@ function connBody() {
   return `<div class="row">${pill}${status ? `<span class="muted" role="status">${esc(status)}</span>` : ""}</div>
     <label class="field"><span>API-ключ</span><span class="row nowrap"><input id="set-key" type="password" name="yaeori-key" autocomplete="new-password" spellcheck="false" placeholder="${conn.keySet ? "Вставьте новый ключ, чтобы заменить" : "Вставьте ключ из консоли Cloud.ru"}" value="${esc(drafts.get("set-key") ?? "")}" data-draft />
       <button class="btn" type="button" data-act="eye" aria-label="Показать ключ" aria-pressed="false">Показать</button></span></label>
-    ${field("set-base", "Адрес API", conn.baseUrl, { ph: "https://foundation-models.api.cloud.ru/v1" })}
+    ${field("set-base", "Адрес API", conn.baseUrl, { ph: "https://foundation-models.api.cloud.ru/v1" })}${problemHtml()}
     <div class="row"><button class="btn primary" data-act="save-conn"${busy ? " disabled" : ""}>Сохранить</button>
       <button class="btn" data-act="check"${busy || !conn.keySet ? " disabled" : ""}>Проверить</button>
       ${conn.keySet ? `<button class="btn danger" data-act="del-key"${busy ? " disabled" : ""}>Удалить ключ</button>` : ""}</div>`;
 }
+const problemHtml = () => !problem ? "" : `<div class="set-err" role="alert"><strong>${esc(problem.error ?? "Ошибка")}</strong>${problem.hint ? `<p>${esc(problem.hint)}</p>` : ""}${problem.detail ? `<small>Ответ сервиса: ${esc(problem.detail)}</small>` : ""}</div>`;
+const vendor = (m: string) => (m.includes("/") ? m.split("/")[0]! : "прочие");
+function testHtml(name: string) {
+  const t = tests[name]; if (!name || !t) return "";
+  if (t === "wait") return `<span class="muted">Проверяю…</span>`;
+  return t.ok ? `<span class="pill ok">Отвечает за ${((t.ms ?? 0) / 1000).toFixed(1)} с</span>` : `<div class="set-err"><strong>${esc(t.error ?? "Не отвечает")}</strong>${t.hint ? `<p>${esc(t.hint)}</p>` : ""}${t.detail ? `<small>Ответ сервиса: ${esc(t.detail)}</small>` : ""}</div>`;
+}
+function slot(label: string, name: string, kind: "main" | "fallback") {
+  const known = models.length > 0 && name && !models.includes(name);
+  return `<div class="mdl-slot"><div class="mdl-slot-head"><span class="muted">${label}</span>${name ? `<code>${esc(name)}</code>` : `<em class="muted">${kind === "main" ? "не выбрана" : "не задана"}</em>`}
+    ${known ? `<span class="pill warn" title="Такого названия нет в списке Cloud.ru">нет в списке</span>` : ""}
+    ${name ? `<button class="btn small" data-act="test" data-m="${esc(name)}"${tests[name] === "wait" ? " disabled" : ""}>Проверить</button><button class="btn small" data-pick="${kind}" data-m="${esc(name)}" aria-label="Убрать: ${label}">Убрать</button>` : ""}</div>${testHtml(name)}</div>`;
+}
+function modelTop() {
+  if (!conn) return "";
+  return `${slot("Основная", conn.model, "main")}${slot("Запасная", conn.fallbackModel, "fallback")}
+    <p class="muted mdl-note">Если основная не ответит, чат сам попробует запасную.</p>${problemHtml()}
+    <div class="row"><button class="btn" data-act="refresh-models"${listing || !conn.keySet ? " disabled" : ""}>${listing ? "Загружаю…" : "Обновить список"}</button>
+      <span class="muted" role="status">${models.length ? `Моделей: ${models.length}` : conn.keySet ? "" : "Сначала сохраните ключ в разделе «Подключение»."}${status ? " " + esc(status) : ""}</span></div>`;
+}
+function modelListHtml() {
+  if (!conn) return "";
+  if (!models.length) return `<p class="muted">${listing ? "Загружаю список…" : "Список моделей пуст."}</p>`;
+  const q = mq.trim().toLowerCase(), list = models.filter((m) => !q || m.toLowerCase().includes(q));
+  if (!list.length) return `<p class="muted">Ничего не найдено. Название можно ввести вручную ниже.</p>`;
+  const groups = new Map<string, string[]>(); for (const m of list) { const v = vendor(m); groups.set(v, [...(groups.get(v) ?? []), m]); }
+  return [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([v, ms]) => `<div class="mdl-group"><h4>${esc(v)} <small>${ms.length}</small></h4>${ms.map((m) => {
+    const main = m === conn!.model, fb = m === conn!.fallbackModel;
+    return `<div class="mdl-row${main ? " is-main" : ""}"><button class="mdl-name" data-pick="main" data-m="${esc(m)}" title="Сделать основной">${esc(m.includes("/") ? m.slice(m.indexOf("/") + 1) : m)}</button>
+      <button class="chip${main ? " on" : ""}" data-pick="main" data-m="${esc(m)}" aria-pressed="${main}">Основная</button><button class="chip${fb ? " on" : ""}" data-pick="fallback" data-m="${esc(m)}" aria-pressed="${fb}">Запасная</button></div>`;
+  }).join("")}</div>`).join("");
+}
 function modelBody() {
   if (!conn) return `<p class="muted">Загрузка…</p>`;
-  return `<datalist id="set-models">${models.map((m) => `<option value="${esc(m)}">`).join("")}</datalist>
-    ${field("set-model", "Основная модель", conn.model, { list: "set-models", ph: "Название из консоли Cloud.ru" })}
-    ${field("set-fallback", "Запасная модель", conn.fallbackModel, { list: "set-models", ph: "Не задана" })}
-    <div class="row"><button class="btn primary" data-act="save-model"${busy ? " disabled" : ""}>Сохранить</button>
-    ${models.length ? `<span class="muted">Доступно моделей: ${models.length}</span>` : `<span class="muted">Нажмите «Проверить» в разделе «Подключение», чтобы получить список моделей.</span>`}</div>`;
+  const rows = guide ? [...guide.http, ...guide.net, ...guide.other].map((g) => `<tr><td><code>${esc(String(g.code))}</code></td><td><strong>${esc(g.title)}</strong><br><span class="muted">${esc(g.hint)}</span></td></tr>`).join("") : "";
+  return `<div id="model-top">${modelTop()}</div>
+    <label class="field"><span>Поиск по списку</span><input id="set-mq" type="search" value="${esc(mq)}" placeholder="Например: qwen, llama, gpt…" spellcheck="false" autocomplete="off"></label>
+    <div id="model-list" class="mdl-list">${modelListHtml()}</div>
+    <details class="mdl-manual"><summary>Указать название вручную</summary>
+      ${field("set-model", "Основная модель", conn.model, { ph: "Название из консоли Cloud.ru" })}${field("set-fallback", "Запасная модель", conn.fallbackModel, { ph: "Не задана" })}
+      <div class="row"><button class="btn primary" data-act="save-model"${busy ? " disabled" : ""}>Сохранить</button></div></details>
+    ${rows ? `<details class="mdl-manual"><summary>Что значат ошибки Cloud.ru</summary><table class="err-table"><tbody>${rows}</tbody></table></details>` : ""}`;
+}
+const refreshModels = () => { const t = document.getElementById("model-top"), l = document.getElementById("model-list"); if (t) t.innerHTML = modelTop(); if (l) l.innerHTML = modelListHtml(); };
+async function loadModels(ctx: Ctx | null, silent: boolean) {
+  listing = true; refreshModels();
+  try { const r = await checkConn(); if (r.ok) { models = r.models ?? []; problem = null; } else problem = r; if (!silent && r.ok) status = ""; } catch (e) { problem = { error: (e as Error).message }; }
+  listing = false; refreshModels(); if (ctx && !document.getElementById("model-top")) ctx.rerender();
 }
 function lookBody(p: Prefs) {
   const themes = THEMES.map(([id, l, h]) => `<button class="theme-card" role="radio" aria-checked="${p.theme === id}" data-theme-id="${id}"><strong>${l}</strong><small>${h}</small></button>`).join("");
@@ -83,7 +126,11 @@ export function settingsView(p: Prefs) {
 }
 
 export function loadConn(ctx: Ctx) {
-  getConn().then((c) => { conn = c; connError = ""; }, (e: Error) => { connError = "Не удалось связаться с сервером: " + e.message; }).finally(ctx.rerender);
+  getConn().then((c) => { conn = c; connError = ""; }, (e: Error) => { connError = "Не удалось связаться с сервером: " + e.message; }).finally(() => {
+    ctx.rerender();
+    if (!guide) getGuide().then((g) => { guide = g; ctx.rerender(); }, () => {});
+    if (conn?.keySet && !autoChecked) { autoChecked = true; void loadModels(ctx, true); }
+  });
 }
 const filter = (q: string) => {
   const needle = q.trim().toLowerCase(); let n = 0;
@@ -105,6 +152,7 @@ export function bindSettings(ctx: Ctx) {
   document.addEventListener("input", (e) => {
     const t = e.target as HTMLInputElement;
     if (t.id === "set-search") { filter(t.value); return; }
+    if (t.id === "set-mq") { mq = t.value; const l = document.getElementById("model-list"); if (l) l.innerHTML = modelListHtml(); return; }
     if (t.dataset.custom !== undefined) { ctx.set({ accent: "custom", custom: t.value }); return; }
     if (t.dataset.draft !== undefined) drafts.set(t.id, t.value);
   });
@@ -120,9 +168,14 @@ export function bindSettings(ctx: Ctx) {
     if (e.key === "/" && location.hash === "#settings" && !/INPUT|TEXTAREA|SELECT/.test(t.tagName)) { e.preventDefault(); document.getElementById("set-search")?.focus(); }
   });
   document.addEventListener("click", (e) => {
-    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-seg],[data-theme-id],[data-accent],[data-collapse],[data-toc],[data-reset],[data-act]");
+    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-seg],[data-theme-id],[data-accent],[data-collapse],[data-toc],[data-reset],[data-act],[data-pick]");
     if (!t) return;
     const p = ctx.prefs();
+    if (t.dataset.pick) {
+      const m = t.dataset.m!, k = t.dataset.pick === "main" ? "model" : "fallbackModel", on = conn?.[k] === m;
+      saveConn({ [k]: on || t.textContent === "Убрать" ? "" : m }).then((c) => { conn = c; status = ""; }, (e: Error) => { status = e.message; }).finally(refreshModels);
+      return;
+    }
     if (t.dataset.seg) { ctx.set({ [t.dataset.seg]: t.dataset.v } as Partial<Prefs>); ctx.rerender(); return; }
     if (t.dataset.themeId) { ctx.set({ theme: t.dataset.themeId as Theme }); ctx.rerender(); return; }
     if (t.dataset.accent) { ctx.set({ accent: t.dataset.accent as AccentId }); ctx.rerender(); return; }
@@ -142,15 +195,17 @@ export function bindSettings(ctx: Ctx) {
       case "save-conn": void run(ctx, async () => {
         const key = val("set-key").trim();
         conn = await saveConn({ ...(key ? { key } : {}), baseUrl: val("set-base") });
-        drafts.delete("set-key"); drafts.delete("set-base"); return key ? "Сохранено" : "Адрес сохранён";
+        drafts.delete("set-key"); drafts.delete("set-base"); problem = null; if (conn.keySet) { autoChecked = true; void loadModels(null, true); } return key ? "Сохранено" : "Адрес сохранён";
       }); break;
-      case "del-key": if (confirm("Удалить сохранённый ключ?")) void run(ctx, async () => { conn = await saveConn({ key: null }); drafts.delete("set-key"); models = []; return "Ключ удалён"; }); break;
+      case "del-key": if (confirm("Удалить сохранённый ключ?")) void run(ctx, async () => { conn = await saveConn({ key: null }); drafts.delete("set-key"); models = []; problem = null; autoChecked = false; return "Ключ удалён"; }); break;
       case "check": void run(ctx, async () => {
         const r = await checkConn();
-        if (!r.ok) return r.error ?? "Проверка не удалась";
-        models = r.models ?? [];
+        if (!r.ok) { problem = r; return ""; }
+        problem = null; models = r.models ?? [];
         return r.modelFound === false ? "Ключ принят, но выбранной модели нет в списке" : `Ключ принят, моделей: ${models.length}`;
       }); break;
+      case "refresh-models": void loadModels(ctx, false); break;
+      case "test": { const m = t.dataset.m!; tests[m] = "wait"; refreshModels(); testModel(m).then((r) => { tests[m] = r; }, (e: Error) => { tests[m] = { ok: false, error: e.message }; }).finally(refreshModels); break; }
       case "save-model": void run(ctx, async () => { conn = await saveConn({ model: val("set-model"), fallbackModel: val("set-fallback") }); drafts.delete("set-model"); drafts.delete("set-fallback"); return "Сохранено"; }); break;
       case "toggle-all": ctx.set({ collapsed: p.collapsed.length >= SECTIONS.length ? [] : SECTIONS.map((s) => s.id) }); ctx.rerender(); break;
       case "export": download("yaeori-settings.json", { ...p, collapsed: [] }); break;
