@@ -12,8 +12,8 @@ export function renderText(src: string): string {
   }).join("");
 }
 
-const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v2";
-const LAYOUTS: [Layout, string][] = [["rings", "Кольца"], ["circle", "Круг"], ["hex", "Соты"], ["tile", "Плита"], ["hud", "HUD"], ["force", "Сила"]];
+const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v3";
+const LAYOUTS: [Layout, string][] = [["sectors", "Сектора"], ["rings", "Кольца"], ["circle", "Круг"], ["hex", "Соты"], ["tile", "Плита"], ["hud", "HUD"], ["force", "Сила"]];
 const num = (v: unknown, lo: number, hi: number, d: number) => (typeof v === "number" && v >= lo && v <= hi ? v : d);
 function loadMap(): MapOptions {
   try {
