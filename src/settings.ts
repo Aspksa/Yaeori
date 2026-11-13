@@ -53,47 +53,33 @@ function connBody() {
       ${conn.keySet ? `<button class="btn danger" data-act="del-key"${busy ? " disabled" : ""}>Удалить ключ</button>` : ""}</div>`;
 }
 const problemHtml = () => !problem ? "" : `<div class="set-err" role="alert"><strong>${esc(problem.error ?? "Ошибка")}</strong>${problem.hint ? `<p>${esc(problem.hint)}</p>` : ""}${problem.detail ? `<small>Ответ сервиса: ${esc(problem.detail)}</small>` : ""}</div>`;
-const vendor = (m: string) => (m.includes("/") ? m.split("/")[0]! : "прочие");
 function testHtml(name: string) {
   const t = tests[name]; if (!name || !t) return "";
   if (t === "wait") return `<span class="muted">Проверяю…</span>`;
   return t.ok ? `<span class="pill ok">Отвечает за ${((t.ms ?? 0) / 1000).toFixed(1)} с</span>` : `<div class="set-err"><strong>${esc(t.error ?? "Не отвечает")}</strong>${t.hint ? `<p>${esc(t.hint)}</p>` : ""}${t.detail ? `<small>Ответ сервиса: ${esc(t.detail)}</small>` : ""}</div>`;
 }
-function slot(label: string, name: string, kind: "main" | "fallback") {
-  const known = models.length > 0 && name && !models.includes(name);
-  return `<div class="mdl-slot"><div class="mdl-slot-head"><span class="muted">${label}</span>${name ? `<code>${esc(name)}</code>` : `<em class="muted">${kind === "main" ? "не выбрана" : "не задана"}</em>`}
-    ${known ? `<span class="pill warn" title="Такого названия нет в списке Cloud.ru">нет в списке</span>` : ""}
-    ${name ? `<button class="btn small" data-act="test" data-m="${esc(name)}"${tests[name] === "wait" ? " disabled" : ""}>Проверить</button><button class="btn small" data-pick="${kind}" data-m="${esc(name)}" aria-label="Убрать: ${label}">Убрать</button>` : ""}</div>${testHtml(name)}</div>`;
-}
 function modelTop() {
   if (!conn) return "";
-  return `${slot("Основная", conn.model, "main")}${slot("Запасная", conn.fallbackModel, "fallback")}
-    <p class="muted mdl-note">Если основная не ответит, чат сам попробует запасную.</p>${problemHtml()}
-    <div class="row"><button class="btn" data-act="refresh-models"${listing || !conn.keySet ? " disabled" : ""}>${listing ? "Загружаю…" : "Обновить список"}</button>
-      <span class="muted" role="status">${models.length ? `Моделей: ${models.length}` : conn.keySet ? "" : "Сначала сохраните ключ в разделе «Подключение»."}${status ? " " + esc(status) : ""}</span></div>`;
+  const m = conn.model, miss = models.length > 0 && m && !models.includes(m);
+  return `<div class="mdl-cur"><span class="muted">Модель</span>${m ? `<code>${esc(m)}</code>` : `<em class="muted">не выбрана</em>`}${miss ? `<span class="pill warn" title="Такого названия нет в списке Cloud.ru">нет в списке</span>` : ""}
+      ${m ? `<button class="btn small" data-act="test" data-m="${esc(m)}"${tests[m] === "wait" ? " disabled" : ""}>Проверить</button>` : ""}</div>${testHtml(m)}${problemHtml()}
+    ${models.length ? `<label class="field mdl-fb"><span>Запасная (если основная не ответит)</span><select id="set-fb"><option value="">не нужна</option>${models.map((x) => `<option value="${esc(x)}"${x === conn!.fallbackModel ? " selected" : ""}>${esc(x)}</option>`).join("")}</select></label>` : ""}
+    ${status ? `<p class="muted" role="status">${esc(status)}</p>` : ""}`;
 }
 function modelListHtml() {
   if (!conn) return "";
-  if (!models.length) return `<p class="muted">${listing ? "Загружаю список…" : "Список моделей пуст."}</p>`;
+  if (!models.length) return `<p class="muted">${listing ? "Загружаю список…" : conn.keySet ? "Список не получен. Введите название модели вручную." : "Сначала сохраните ключ в разделе «Подключение»."}</p>
+    ${listing ? "" : field("set-model", "Название модели", conn.model, { ph: "Из консоли Cloud.ru, например openai/gpt-oss-120b" })}`;
   const q = mq.trim().toLowerCase(), list = models.filter((m) => !q || m.toLowerCase().includes(q));
-  if (!list.length) return `<p class="muted">Ничего не найдено. Название можно ввести вручную ниже.</p>`;
-  const groups = new Map<string, string[]>(); for (const m of list) { const v = vendor(m); groups.set(v, [...(groups.get(v) ?? []), m]); }
-  return [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([v, ms]) => `<div class="mdl-group"><h4>${esc(v)} <small>${ms.length}</small></h4>${ms.map((m) => {
-    const main = m === conn!.model, fb = m === conn!.fallbackModel;
-    return `<div class="mdl-row${main ? " is-main" : ""}"><button class="mdl-name" data-pick="main" data-m="${esc(m)}" title="Сделать основной">${esc(m.includes("/") ? m.slice(m.indexOf("/") + 1) : m)}</button>
-      <button class="chip${main ? " on" : ""}" data-pick="main" data-m="${esc(m)}" aria-pressed="${main}">Основная</button><button class="chip${fb ? " on" : ""}" data-pick="fallback" data-m="${esc(m)}" aria-pressed="${fb}">Запасная</button></div>`;
-  }).join("")}</div>`).join("");
+  if (!list.length) return `<p class="muted">Ничего не найдено.</p>`;
+  return list.map((m) => `<button class="mdl-row${m === conn!.model ? " is-main" : ""}" data-pick="main" data-m="${esc(m)}" role="radio" aria-checked="${m === conn!.model}"><span>${esc(m)}</span><i aria-hidden="true">✓</i></button>`).join("");
 }
 function modelBody() {
   if (!conn) return `<p class="muted">Загрузка…</p>`;
-  const rows = guide ? [...guide.http, ...guide.net, ...guide.other].map((g) => `<tr><td><code>${esc(String(g.code))}</code></td><td><strong>${esc(g.title)}</strong><br><span class="muted">${esc(g.hint)}</span></td></tr>`).join("") : "";
   return `<div id="model-top">${modelTop()}</div>
-    <label class="field"><span>Поиск по списку</span><input id="set-mq" type="search" value="${esc(mq)}" placeholder="Например: qwen, llama, gpt…" spellcheck="false" autocomplete="off"></label>
-    <div id="model-list" class="mdl-list">${modelListHtml()}</div>
-    <details class="mdl-manual"${models.length ? "" : " open"}><summary>Указать название вручную</summary>
-      ${field("set-model", "Основная модель", conn.model, { ph: "Название из консоли Cloud.ru" })}${field("set-fallback", "Запасная модель", conn.fallbackModel, { ph: "Не задана" })}
-      <div class="row"><button class="btn primary" data-act="save-model"${busy ? " disabled" : ""}>Сохранить</button></div></details>
-    ${rows ? `<details class="mdl-manual"><summary>Что значат ошибки Cloud.ru</summary><table class="err-table"><tbody>${rows}</tbody></table></details>` : ""}`;
+    <div class="mdl-search"><input id="set-mq" type="search" value="${esc(mq)}" placeholder="Найти модель: qwen, llama, gpt…" aria-label="Поиск по списку моделей" spellcheck="false" autocomplete="off">
+      <button class="btn small" data-act="refresh-models" title="Обновить список"${listing || !conn.keySet ? " disabled" : ""}>${listing ? "…" : "↻"}</button></div>
+    <div id="model-list" class="mdl-list" role="radiogroup" aria-label="Модели">${modelListHtml()}</div>`;
 }
 const refreshModels = () => { const t = document.getElementById("model-top"), l = document.getElementById("model-list"); if (t) t.innerHTML = modelTop(); if (l) l.innerHTML = modelListHtml(); };
 async function loadModels(ctx: Ctx | null, silent: boolean) {
@@ -113,7 +99,8 @@ const dataBody = () => `<div class="row"><button class="btn" data-act="export">�
   <input type="file" accept="application/json,.json" hidden id="set-import" /></div>
   <p class="muted">Файл содержит только внешний вид. Ключ Cloud.ru в него не попадает.</p>
   <div class="row"><button class="btn danger" data-act="reset-all">Сбросить внешний вид</button></div>`;
-const aboutBody = () => `<div class="set-row"><strong>Версия</strong><code>${esc(pkg.version)}</code></div>
+const errorsHtml = () => !guide ? "" : `<details class="mdl-manual"><summary>Что значат ошибки Cloud.ru</summary><table class="err-table"><tbody>${[...guide.http, ...guide.net, ...guide.other].map((g) => `<tr><td><code>${esc(String(g.code))}</code></td><td><strong>${esc(g.title)}</strong><br><span class="muted">${esc(g.hint)}</span></td></tr>`).join("")}</tbody></table></details>`;
+const aboutBody = () => `${errorsHtml()}<div class="set-row"><strong>Версия</strong><code>${esc(pkg.version)}</code></div>
   <div class="set-row"><strong>Горячие клавиши</strong><ul class="keys"><li><kbd>Alt</kbd>+<kbd>1</kbd> Главная</li><li><kbd>Alt</kbd>+<kbd>2</kbd> Настройки</li><li><kbd>/</kbd> поиск по настройкам</li></ul></div>`;
 
 export function settingsView(p: Prefs) {
@@ -160,8 +147,8 @@ export function bindSettings(ctx: Ctx) {
   document.addEventListener("change", (e) => {
     const t = e.target as HTMLInputElement;
     if (t.dataset.custom !== undefined) ctx.rerender();
-    if (t.id === "set-model" || t.id === "set-fallback") { // ручной ввод сохраняется сразу, без отдельной кнопки
-      saveConn({ model: val("set-model"), fallbackModel: val("set-fallback") }).then((c) => { conn = c; drafts.delete("set-model"); drafts.delete("set-fallback"); status = "Сохранено"; }, (e: Error) => { status = e.message; }).finally(refreshModels);
+    if (t.id === "set-model" || t.id === "set-fb") { // сохраняется сразу, без отдельной кнопки
+      saveConn(t.id === "set-model" ? { model: t.value } : { fallbackModel: t.value }).then((c) => { conn = c; drafts.delete("set-model"); status = ""; }, (e: Error) => { status = e.message; }).finally(refreshModels);
     }
     if (t.id === "set-import" && t.files?.[0]) {
       t.files[0].text().then((txt) => { ctx.set(clean(JSON.parse(txt))); status = "Настройки загружены"; ctx.rerender(); }, () => { status = "Файл не подошёл"; ctx.rerender(); });
@@ -176,8 +163,7 @@ export function bindSettings(ctx: Ctx) {
     if (!t) return;
     const p = ctx.prefs();
     if (t.dataset.pick) {
-      const m = t.dataset.m!, k = t.dataset.pick === "main" ? "model" : "fallbackModel", on = conn?.[k] === m;
-      saveConn({ [k]: on || t.textContent === "Убрать" ? "" : m }).then((c) => { conn = c; status = ""; }, (e: Error) => { status = e.message; }).finally(refreshModels);
+      saveConn({ model: t.dataset.m! }).then((c) => { conn = c; status = ""; }, (e: Error) => { status = e.message; }).finally(refreshModels);
       return;
     }
     if (t.dataset.seg) { ctx.set({ [t.dataset.seg]: t.dataset.v } as Partial<Prefs>); ctx.rerender(); return; }
@@ -189,7 +175,7 @@ export function bindSettings(ctx: Ctx) {
       const id = t.dataset.reset;
       if (id === "look") ctx.set({ theme: DEFAULT_PREFS.theme, accent: DEFAULT_PREFS.accent, custom: DEFAULT_PREFS.custom, textSize: DEFAULT_PREFS.textSize, density: DEFAULT_PREFS.density, radius: DEFAULT_PREFS.radius });
       if (id === "conn") { for (const k of ["set-key", "set-base"]) drafts.delete(k); void run(ctx, async () => { conn = await saveConn({ key: null, baseUrl: "" }); return "Подключение сброшено"; }); return; }
-      if (id === "model") { for (const k of ["set-model", "set-fallback"]) drafts.delete(k); void run(ctx, async () => { conn = await saveConn({ model: "", fallbackModel: "" }); return "Модели сброшены"; }); return; }
+      if (id === "model") { drafts.delete("set-model"); void run(ctx, async () => { conn = await saveConn({ model: "", fallbackModel: "" }); return "Модели сброшены"; }); return; }
       if (id === "data") { download("yaeori-settings.json", { ...p, collapsed: [] }); return; }
       ctx.rerender(); return;
     }
@@ -210,7 +196,6 @@ export function bindSettings(ctx: Ctx) {
       }); break;
       case "refresh-models": void loadModels(ctx, false); break;
       case "test": { const m = t.dataset.m!; tests[m] = "wait"; refreshModels(); testModel(m).then((r) => { tests[m] = r; }, (e: Error) => { tests[m] = { ok: false, error: e.message }; }).finally(refreshModels); break; }
-      case "save-model": void run(ctx, async () => { conn = await saveConn({ model: val("set-model"), fallbackModel: val("set-fallback") }); drafts.delete("set-model"); drafts.delete("set-fallback"); return "Сохранено"; }); break;
       case "toggle-all": ctx.set({ collapsed: p.collapsed.length >= SECTIONS.length ? [] : SECTIONS.map((s) => s.id) }); ctx.rerender(); break;
       case "export": download("yaeori-settings.json", { ...p, collapsed: [] }); break;
       case "import": document.getElementById("set-import")?.click(); break;
