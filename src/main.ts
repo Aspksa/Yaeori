@@ -1,5 +1,6 @@
 import "./style.css";
 import { clean, load, paint, save, type Prefs } from "./prefs";
+import { homeView, mountHome } from "./chat";
 import { bindSettings, loadConn, settingsView } from "./settings";
 
 let prefs: Prefs = load();
@@ -19,26 +20,24 @@ const ICONS = {
 };
 const NAV: [PageId, string][] = [["home", "Главная"], ["settings", "Настройки"]];
 
-function homeView() {
-  return `<header class="pg-head"><h1>Главная</h1><p class="muted">Здесь будет содержимое Yaeori.</p></header>
-    <section class="card hero"><h2>Добро пожаловать</h2><p class="muted">Дизайн взят у JUUNIBI: графитовая тема и один акцентный цвет. Круглой кнопки-аватара нет.</p>
-    <button class="btn primary" data-go="settings">Открыть настройки</button></section>`;
-}
+let unmount: (() => void) | null = null;
 function render() {
+  unmount?.(); unmount = null;
   const nav = NAV.map(([id, label]) => `<button class="nav-item" data-nav="${id}"${page === id ? ' aria-current="page"' : ""}>${ICONS[id]}<span>${label}</span></button>`).join("");
   document.getElementById("app")!.innerHTML = `<div class="shell${menuOpen ? " open" : ""}">
     <div class="topbar"><button class="btn" data-menu aria-label="Меню">${ICONS.menu}</button><strong>Yaeori</strong></div>
     <aside class="side" aria-label="Меню"><div class="brand"><i></i>Yaeori</div>${nav}<div class="grow"></div><div class="side-foot">v0.1.0</div></aside>
-    <main class="main">${page === "home" ? homeView() : settingsView(prefs)}</main></div>`;
+    <main class="main${page === "home" ? " wide" : ""}">${page === "home" ? homeView() : settingsView(prefs)}</main></div>`;
+  if (page === "home") unmount = mountHome();
 }
 
 const ctx = { prefs: () => prefs, set: setPrefs, rerender: render };
 const go = (id: PageId) => { page = id; menuOpen = false; history.replaceState(null, "", id === "home" ? "#" : "#" + id); render(); if (id === "settings") loadConn(ctx); };
 document.addEventListener("click", (e) => {
   const t = (e.target as HTMLElement).closest<HTMLElement>("[data-nav],[data-go],[data-menu]");
-  if (!t) { if (menuOpen && !(e.target as HTMLElement).closest(".side")) { menuOpen = false; render(); } return; }
+  if (!t) { if (menuOpen && !(e.target as HTMLElement).closest(".side")) { menuOpen = false; document.querySelector(".shell")?.classList.remove("open"); } return; }
   const dest = t.dataset.nav ?? t.dataset.go;
-  if (dest) go(dest as PageId); else { menuOpen = !menuOpen; render(); }
+  if (dest) go(dest as PageId); else { menuOpen = !menuOpen; document.querySelector(".shell")?.classList.toggle("open", menuOpen); }
 });
 document.addEventListener("keydown", (e) => {
   if (!e.altKey || e.ctrlKey || e.metaKey) return;
