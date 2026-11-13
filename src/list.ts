@@ -1,10 +1,10 @@
-import type { AsOf, ChatInfo, Clusters, Dispute, Hypothesis, Entity, Inactive, RecallCfg, Review, SleepInfo, VecInfo } from "./api";
+import type { AsOf, ChatInfo, Clusters, Dispute, Hypothesis, Entity, UnitInfo, Inactive, RecallCfg, Review, SleepInfo, VecInfo } from "./api";
 import type { GraphData } from "./api";
 
 type Tab = "chats" | "memory" | "sense" | "links";
 type Filter = "all" | "fresh" | "long" | "fading";
 export interface ListState { chats: ChatInfo[]; brain: GraphData | null; current: number; vec: VecInfo | null; building?: boolean }
-export interface ListHandlers { more(areaId: number): void; openChat(id: number): void; focus(token: string): void; pin(tokens: string[]): void; kinds(k: string[]): void; edit(id: number, patch: { text?: string; topics?: string; pinned?: boolean }): Promise<unknown>; forget(id: number): Promise<unknown>; review(): Promise<Review>; merge(keep: number, drop: number[], history?: boolean): Promise<unknown>; compress(ids: number[], text: string, topic: string): Promise<unknown>; inactive(): Promise<Inactive[]>; entities(): Promise<Entity[]>; restore(id: number): Promise<unknown>; clusters(): Promise<Clusters>; hypotheses(): Promise<Hypothesis[]>; confirm(id: number): Promise<unknown>; correct(id: number, text: string): Promise<unknown>; asOf(date: string, q: string): Promise<AsOf>; recallCfg(): Promise<RecallCfg>; setRecallCfg(c: { weights?: RecallCfg["weights"]; rerank?: boolean; check?: boolean }): Promise<RecallCfg>; disputes(): Promise<Dispute[]>; resolve(a: number, b: number, keep: number | null): Promise<unknown>; sleepInfo(): Promise<{ last: SleepInfo | null; sleeping: boolean }>; sleep(): Promise<SleepInfo>; build(): void; setEmbedModel(m: string): void }
+export interface ListHandlers { more(areaId: number): void; openChat(id: number): void; focus(token: string): void; pin(tokens: string[]): void; kinds(k: string[]): void; edit(id: number, patch: { text?: string; topics?: string; pinned?: boolean }): Promise<unknown>; forget(id: number): Promise<unknown>; review(): Promise<Review>; merge(keep: number, drop: number[], history?: boolean): Promise<unknown>; compress(ids: number[], text: string, topic: string): Promise<unknown>; inactive(): Promise<Inactive[]>; entities(): Promise<Entity[]>; unit(id: number): Promise<UnitInfo>; alias(id: number, word: string, remove?: boolean): Promise<{ error?: string }>; restore(id: number): Promise<unknown>; clusters(): Promise<Clusters>; hypotheses(): Promise<Hypothesis[]>; confirm(id: number): Promise<unknown>; correct(id: number, text: string): Promise<unknown>; asOf(date: string, q: string): Promise<AsOf>; recallCfg(): Promise<RecallCfg>; setRecallCfg(c: { weights?: RecallCfg["weights"]; rerank?: boolean; check?: boolean }): Promise<RecallCfg>; disputes(): Promise<Dispute[]>; resolve(a: number, b: number, keep: number | null): Promise<unknown>; sleepInfo(): Promise<{ last: SleepInfo | null; sleeping: boolean }>; sleep(): Promise<SleepInfo>; build(): void; setEmbedModel(m: string): void }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const DAY = 86400000;
@@ -27,6 +27,7 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
   let hyp: Hypothesis[] | null = null, hypAsked = false, hypStale = false, asDate = "", asQ = "", asRes: AsOf | null = null, asBusy = false, asErr = "";
   let cfg: RecallCfg | null = null, cfgAsked = false, cfgNote = "", disp: Dispute[] | null = null, dispAsked = false;
   let slp: { last: SleepInfo | null; sleeping: boolean } | null = null, slpBusy = false, slpAsked = false;
+  const units = new Map<number, UnitInfo | "load" | "err">(); let aliasNote = "";
   const closed = new Set<number>(), pages = new Map<number, number>(), relOpen = new Set<number>(); let locked: string | null = null, editing: number | null = null, rev: Review | null = null, revBusy = false, revNote = "", archOpen = false, inact: Inactive[] | null = null, ents: Entity[] | null = null, entLoading = false; const entOpen = new Set<number>(), kindsOn = new Set(["topic", "sense", "chat", "entity", "habit"]);
   root.innerHTML = `<div class="ls-top"><div class="ls-tabs" role="tablist" aria-label="Что показывать в списке"></div>
     <input class="ls-q" type="search" placeholder="Найти…" autocomplete="off" spellcheck="false" aria-label="Поиск по списку" /><div class="ls-chips" role="radiogroup" aria-label="Фильтр памяти" hidden></div></div>
@@ -54,7 +55,10 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     return `<h4 class="ls-h">Сущности · ${ents.length}</h4>` + rows.map((e) => {
       const open = entOpen.has(e.id), rel = e.relations.length ? e.relations.map((r) => `<p class="${r.past ? "past" : ""}">${esc(r.s)} <em>${esc(r.r)}</em> ${esc(r.o)}${r.past ? " · раньше" : ""}</p>`).join("") : "";
       const mems = open ? e.memories.map((id) => `<button type="button" class="ls-row ls-sub" data-mem="${id}"><span class="ls-t">${esc(textOf(id))}</span></button>`).join("") : "";
-      return `<div class="ls-ent"><button type="button" class="ls-row" data-ent="${e.id}" aria-expanded="${open}"><i class="dot sq"></i><span class="ls-t">${esc(e.name)}</span><span class="ls-m">${e.memories.length}</span></button>${open ? rel + mems : ""}</div>`;
+      const u = open ? units.get(e.id) : null; if (open && !u) { units.set(e.id, "load"); void h.unit(e.id).then((x) => { units.set(e.id, x); }, () => { units.set(e.id, "err"); }).finally(render); }
+      const hist = u && typeof u === "object" ? `${u.path.length ? `<p class="ls-path">${u.path.map((p) => esc(p.name)).join(" › ")} › <b>${esc(u.name)}</b></p>` : ""}${u.next ? `<p class="ls-next">⏰ Ближайший срок ${esc(u.next.due)}: ${esc(u.next.text)}</p>` : ""}${u.children.length ? `<p class="ls-kids">В составе: ${u.children.slice(0, 12).map((c) => `${esc(c.name)}${c.typeLabel ? ` <em>${esc(c.typeLabel)}</em>` : ""} ${c.n}`).join(" · ")}</p>` : ""}${u.events.length ? `<div class="ls-tl">${u.events.map((x) => `<button type="button" class="ls-row ls-sub${x.past ? " past" : ""}" data-mem="${x.id}"><span class="ls-t"><em>${esc(x.when)}</em> ${esc(x.text)}${x.dueAt ? ` · ⏰ ${esc(x.dueAt)}` : ""}${x.conf < 0.5 ? " · ❓" : ""}</span></button>`).join("")}</div>${u.total > u.events.length ? `<small>Показаны последние ${u.events.length} из ${u.total}</small>` : ""}` : ""}` : open && u === "load" ? `<small>Собираю историю…</small>` : "";
+      const ali = open ? `<div class="ls-al"><small>Другие названия:</small> ${(e.aliases ?? []).map((a) => `<button type="button" class="ls-chip" data-unal="${e.id}" data-aw="${esc(a)}" title="Убрать">${esc(a)} ×</button>`).join("")}<form data-alias="${e.id}"><input type="text" maxlength="30" placeholder="своё слово: бортовой" aria-label="Другое название" /><button type="submit" class="ls-btn">Добавить</button></form>${aliasNote ? `<small>${esc(aliasNote)}</small>` : ""}</div>` : "";
+      return `<div class="ls-ent"><button type="button" class="ls-row" data-ent="${e.id}" aria-expanded="${open}"><i class="dot sq"></i><span class="ls-t">${esc(e.name)}${e.typeLabel ? ` <em class="ls-ty">${esc(e.typeLabel)}</em>` : ""}${e.parent ? ` <span class="ls-par">· ${esc(e.parent)}</span>` : ""}</span><span class="ls-m">${e.memories.length}</span></button>${open ? hist + rel + ali + mems : ""}</div>`;
     }).join("");
   }
   function linksHtml() {
@@ -153,7 +157,7 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     const top = body.scrollTop; body.innerHTML = tab === "chats" ? chatsHtml() : tab === "memory" ? memHtml() : tab === "sense" ? senseHtml() : linksHtml(); body.scrollTop = top;
   }
   root.addEventListener("click", (e) => {
-    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-hok],[data-hed],[data-hno],[data-asgo],[data-cl],[data-clm],[data-clp],[data-cfg],[data-dk-a],[data-dk-b],[data-dk-both],[data-sleep],[data-pg],[data-more],[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area],[data-build],[data-em],[data-rel],[data-pair],[data-kind],[data-pin],[data-edit],[data-cancel],[data-forget],[data-review],[data-mg],[data-skip-mg],[data-keep-a],[data-keep-b],[data-skip-cf],[data-cp],[data-skip-cp],[data-arch],[data-restore],[data-ent]"); if (!t) return;
+    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-unal],[data-hok],[data-hed],[data-hno],[data-asgo],[data-cl],[data-clm],[data-clp],[data-cfg],[data-dk-a],[data-dk-b],[data-dk-both],[data-sleep],[data-pg],[data-more],[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area],[data-build],[data-em],[data-rel],[data-pair],[data-kind],[data-pin],[data-edit],[data-cancel],[data-forget],[data-review],[data-mg],[data-skip-mg],[data-keep-a],[data-keep-b],[data-skip-cf],[data-cp],[data-skip-cp],[data-arch],[data-restore],[data-ent]"); if (!t) return;
     const d = t.dataset;
     if (d.review) { revBusy = true; revNote = ""; render(); void h.review().then((r) => { rev = r; }, (e: Error) => { revNote = e.message; }).finally(() => { revBusy = false; render(); }); }
     else if (d.mg) { const g = rev?.merges[Number(d.mg)]; if (g) { rev!.merges.splice(Number(d.mg), 1); void h.merge(g.keep, g.items.filter((i) => i.id !== g.keep).map((i) => i.id)); render(); } }
@@ -164,6 +168,7 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     else if (d.arch) { archOpen = !archOpen; if (archOpen) { void h.inactive().then((x) => { inact = x; render(); }); } render(); }
     else if (d.restore) { inact = inact?.filter((x) => x.id !== Number(d.restore)) ?? null; void h.restore(Number(d.restore)); render(); }
     else if (d.skipCf) { rev?.conflicts.splice(Number(d.skipCf), 1); render(); }
+    else if (d.unal) { void h.alias(Number(d.unal), d.aw ?? "", true).then(() => { aliasNote = ""; ents = null; units.delete(Number(d.unal)); }).finally(render); }
     else if (d.ent) { const id = Number(d.ent), e = ents?.find((x) => x.id === id); if (entOpen.has(id)) { entOpen.delete(id); locked = null; h.pin([]); } else { entOpen.clear(); entOpen.add(id); if (e) { locked = "ent:" + id; h.pin(e.memories.map((m) => "mem:" + m)); h.focus("mem:" + e.memories[0]); } } render(); }
     else if (d.pin) { const m = st.brain?.messages.find((x) => x.id === Number(d.pin)); void h.edit(Number(d.pin), { pinned: !m?.pinned }); }
     else if (d.edit) { editing = Number(d.edit); render(); root.querySelector<HTMLTextAreaElement>(".ls-edit textarea")?.focus(); }
@@ -195,6 +200,7 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
   });
   root.addEventListener("input", (e) => { const el = e.target as HTMLInputElement; if (el.dataset?.asd !== undefined) { asDate = el.value; root.querySelector<HTMLButtonElement>("[data-asgo]")?.toggleAttribute("disabled", !asDate || asBusy); } else if (el.dataset?.asq !== undefined) asQ = el.value; });
   root.addEventListener("submit", (e) => {
+    { const af = (e.target as HTMLElement).closest<HTMLFormElement>("form[data-alias]"); if (af) { e.preventDefault(); const w = af.querySelector("input")!.value.trim(); if (!w) return; void h.alias(Number(af.dataset.alias), w).then((r) => { aliasNote = r.error ?? "Добавлено"; units.delete(Number(af.dataset.alias)); ents = null; }, () => { aliasNote = "Не получилось"; }).finally(render); return; } }
     const f = (e.target as HTMLElement).closest<HTMLFormElement>("form[data-form]"); if (!f) return; e.preventDefault();
     const id = Number(f.dataset.form), text = f.querySelector("textarea")!.value, topics = f.querySelector<HTMLInputElement>("input")!.value;
     editing = null; void h.edit(id, { text, topics });
@@ -203,5 +209,5 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
   root.addEventListener("mouseout", (e) => { if ((e.target as HTMLElement).closest("[data-mem]") && !locked) h.pin([]); });
   input.addEventListener("input", () => { q = input.value.trim().toLowerCase(); render(); });
   render();
-  return { update(s: ListState) { st = s; ents = null; cluStale = true; hypStale = true; render(); } };
+  return { update(s: ListState) { st = s; ents = null; units.clear(); cluStale = true; hypStale = true; render(); } };
 }

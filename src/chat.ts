@@ -1,4 +1,4 @@
-import { getClusters, getAsOf, getReminders, ackReminders, getHypotheses, getDisputes, getRecallCfg, resolveDispute, setRecallCfg, confirmMemory, correctMemory, getSleep, runSleep, createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
+import { getClusters, getAsOf, getUnit, addAlias, removeAlias, getReminders, ackReminders, getHypotheses, getDisputes, getRecallCfg, resolveDispute, setRecallCfg, confirmMemory, correctMemory, getSleep, runSleep, createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
 import { mountList } from "./list";
 import { esc as mdEsc, renderText } from "./md";
 export { renderText };
@@ -73,7 +73,7 @@ export function mountHome(): () => void {
     edit: (id, p) => updateMemory(id, p).then(() => refreshGraph()), forget: (id) => forgetMemory(id).then(() => refreshGraph()),
     review: () => reviewMemories(), merge: (k, d, hs) => mergeMemories(k, d, hs).then(() => refreshGraph()),
     compress: (ids, text, topic) => compressMemories(ids, text, topic).then(() => refreshGraph()),
-    inactive: () => getInactive().then((r) => r.items), entities: () => getEntities().then((r) => r.items), restore: (id) => restoreMemory(id).then(() => refreshGraph()),
+    inactive: () => getInactive().then((r) => r.items), entities: () => getEntities().then((r) => r.items), unit: (id) => getUnit(id), alias: (id, w, rm) => (rm ? removeAlias(id, w).then(() => ({})) : addAlias(id, w).then((r) => { void refreshGraph(); return r; })), restore: (id) => restoreMemory(id).then(() => refreshGraph()),
     clusters: () => getClusters(), hypotheses: () => getHypotheses().then((r) => r.items), confirm: (id) => confirmMemory(id).then((r) => { void refreshGraph(); return r; }), correct: (id, t) => correctMemory(id, t).then((r) => { void refreshGraph(); return r; }), asOf: (d, q) => getAsOf(d, q), recallCfg: () => getRecallCfg(), setRecallCfg: (c) => setRecallCfg(c), disputes: () => getDisputes().then((r) => r.items), resolve: (a, b, k) => resolveDispute(a, b, k).then(() => refreshGraph()),
     sleepInfo: () => getSleep(), sleep: () => runSleep().then((r) => { void refreshGraph(); return r; }),
     build: () => { building = true; syncList(); void buildVectors().then((v) => { vec = v; }, () => {}).finally(() => { building = false; syncList(); void refreshGraph(); }); },

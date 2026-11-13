@@ -2,6 +2,7 @@
 // Рабочая копия в памяти, на диск пишется атомарно (временный файл + rename) с небольшой задержкой.
 import path from "node:path";
 import { openStore } from "./sqlstore.mjs";
+import * as equip from "./equip.mjs";
 
 const STOP = new Set("который которая которое которые также можно очень будет есть этого этой этом чтобы когда если после перед через между потому какой какая какие нужно надо вопрос номер привет здравствуйте сообщений сообщение about which would there their these those other where while using should could себя меня тебя тебе мной свой свои своё всего быть были было была только ещё уже или либо чего этим этих того тому тоже здесь сейчас".split(" "));
 
@@ -38,6 +39,8 @@ export async function openDb(root) {
   db.run("CREATE TABLE IF NOT EXISTS entities (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, key TEXT NOT NULL UNIQUE)");
   db.run("CREATE TABLE IF NOT EXISTS mem_entities (memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE, entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, PRIMARY KEY (memory_id, entity_id))");
   db.run("CREATE TABLE IF NOT EXISTS relations (id INTEGER PRIMARY KEY AUTOINCREMENT, subj INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, rel TEXT NOT NULL, obj INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, memory_id INTEGER REFERENCES memories(id) ON DELETE CASCADE)");
+  try { const cols = store.cols("entities"); for (const [c, t] of [["etype", "TEXT"], ["parent", "INTEGER"]]) if (!cols.includes(c)) db.run(`ALTER TABLE entities ADD COLUMN ${c} ${t}`); } catch { /* уже есть */ }
+  db.run("CREATE TABLE IF NOT EXISTS entity_alias (key TEXT PRIMARY KEY, entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, user INTEGER NOT NULL DEFAULT 0)");
 
   const rows = store.all;
   let cache = null; // активные воспоминания в памяти: пересобираются только после записи
@@ -74,15 +77,40 @@ export async function openDb(root) {
   };
   const ekey = (n) => norm(n).slice(0, 40);
   const vdate = (x) => { const m = /^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/.exec(String(x ?? "").trim()); return m ? [m[1], m[2], m[3]].filter(Boolean).join("-") : null; };
+  /** Находит или создаёт сущность с типом. Тип и родителя (марка → модель → машина → узел) дописываем, если их ещё не было. */
+  const mkEnt = (name, etype = null, parent = null) => {
+    const nm = String(name).slice(0, 40), key = ekey(nm); if (key.length < 3) return null;
+    let r = rows("SELECT id, etype, parent FROM entities WHERE key = ?", [key])[0];
+    if (!r) { db.run("INSERT INTO entities(name, key, etype, parent) VALUES (?, ?, ?, ?)", [nm, key, etype, parent]); return rows("SELECT last_insert_rowid() AS id")[0].id; }
+    if (etype && !r.etype) db.run("UPDATE entities SET etype = ? WHERE id = ?", [etype, r.id]);
+    if (parent && !r.parent && parent !== r.id) db.run("UPDATE entities SET parent = ? WHERE id = ?", [parent, r.id]);
+    return r.id;
+  };
   const entityId = (name) => {
-    const nm = String(name ?? "").replace(/\s+/g, " ").trim().slice(0, 40), key = ekey(nm); if (key.length < 3) return null;
-    const r = rows("SELECT id FROM entities WHERE key = ?", [key])[0]; if (r) return r.id;
+    const raw = String(name ?? "").replace(/\s+/g, " ").trim().slice(0, 40), cl = equip.classify(raw), nm = (cl?.name ?? raw).slice(0, 40), key = ekey(nm); if (key.length < 3) return null;
+    const al = rows("SELECT entity_id AS id FROM entity_alias WHERE key = ?", [ekey(raw)])[0]; if (al) return al.id;
+    const note = (id) => { if (cl?.type) { const e = rows("SELECT etype FROM entities WHERE id = ?", [id])[0]; if (e && !e.etype) db.run("UPDATE entities SET etype = ? WHERE id = ?", [cl.type, id]); } if (ekey(raw) !== key) db.run("INSERT OR IGNORE INTO entity_alias(key, entity_id, user) VALUES (?, ?, 0)", [ekey(raw), id]); return id; };
+    const r = rows("SELECT id FROM entities WHERE key = ?", [key])[0]; if (r) return note(r.id);
     const tk = key.split(" "); // «Иван П.» и «Иван Петров» — один человек
-    if (tk.length === 2) {
+    if (tk.length === 2 && !cl?.parent) {
       if (tk[1].length === 1) { const c = rows("SELECT id, key FROM entities WHERE key LIKE ?", [tk[0] + " " + tk[1] + "%"]).filter((e) => e.key.split(" ").length === 2); if (c.length === 1) return c[0].id; }
-      else { const c = rows("SELECT id FROM entities WHERE key = ?", [tk[0] + " " + tk[1][0]])[0]; if (c) { db.run("UPDATE entities SET name = ?, key = ? WHERE id = ?", [nm, key, c.id]); return c.id; } }
+      else { const c = rows("SELECT id FROM entities WHERE key = ?", [tk[0] + " " + tk[1][0]])[0]; if (c) { db.run("UPDATE entities SET name = ?, key = ? WHERE id = ?", [nm, key, c.id]); return note(c.id); } }
     }
-    db.run("INSERT INTO entities(name, key) VALUES (?, ?)", [nm, key]); return rows("SELECT last_insert_rowid() AS id")[0].id;
+    const par = cl?.parent ? mkEnt(cl.parent, "brand") : null;
+    return note(mkEnt(nm, cl?.type ?? null, par));
+  };
+  /** Техника в тексте факта: марки, модели, номера, узлы. Привязывает факт к каждой найденной единице и выстраивает иерархию. */
+  const autoEquip = (memId, text) => {
+    const items = equip.detect(text), ids = new Map(), norm2 = " " + norm(text) + " ";
+    const link = (id) => { if (id) db.run("INSERT OR IGNORE INTO mem_entities(memory_id, entity_id) VALUES (?, ?)", [memId, id]); };
+    for (const it of items.filter((x) => x.type !== "part")) { const par = it.parent ? (ids.get(it.parent) ?? mkEnt(it.parent, "brand")) : null; if (it.parent) ids.set(it.parent, par); const id = mkEnt(it.name, it.type, par); ids.set(it.name, id); link(id); }
+    const units = items.filter((x) => equip.isUnit(x.type)), models = items.filter((x) => x.type === "model"), brands = items.filter((x) => x.type === "brand");
+    const up = models.length === 1 ? ids.get(models[0].name) : brands.length === 1 && !models.length ? ids.get(brands[0].name) : null;
+    if (up) for (const u of units) db.run("UPDATE entities SET parent = ? WHERE id = ? AND parent IS NULL", [up, ids.get(u.name)]);
+    const machine = units[0] ?? (models.length === 1 ? models[0] : null);
+    if (machine) for (const p of items.filter((x) => x.type === "part")) link(mkEnt(`${p.name} (${machine.name})`, "part", ids.get(machine.name)));
+    for (const a of rows("SELECT key, entity_id AS id FROM entity_alias WHERE user = 1")) if (norm2.includes(" " + a.key + " ")) link(a.id);
+    if (items.length && cache) cache.ent = null;
   };
   const confOf = (m) => (Math.min(20, m.strength ?? 1) + 1) / (Math.min(20, m.strength ?? 1) + (m.against ?? 0) * 1.5 + 2); // достоверность: подтверждения против возражений
   const DOW = { понедельник: 1, вторник: 2, среду: 3, среда: 3, четверг: 4, пятницу: 5, пятница: 5, субботу: 6, суббота: 6, воскресенье: 0 };
@@ -311,11 +339,11 @@ export async function openDb(root) {
           db.run("UPDATE memories SET strength = ?, topics = ?, updated_at = ?, importance = COALESCE(?, importance), mtype = COALESCE(mtype, ?) WHERE id = ?", [boost ? Math.min(same.strength + 1, 20) : same.strength, merged.join(","), boost ? now() : same.at, imp, mtype, same.id]);
           if (src === "chat" && unconfirmed(same)) { db.run("UPDATE memories SET src = 'chat' WHERE id = ?", [same.id]); same.src = "chat"; } // человек сказал то же сам: запись подтверждена
           if (vdate(f?.until)) db.run("UPDATE memories SET valid_to = ? WHERE id = ?", [vdate(f.until), same.id]);
-          linkEntities(same.id, f?.entities, f?.rel); ids[fi] = same.id; if (due) db.run("UPDATE memories SET due_at = ?, importance = MAX(COALESCE(importance, 0), 8) WHERE id = ?", [due, same.id]);
+          linkEntities(same.id, f?.entities, f?.rel); autoEquip(same.id, text); ids[fi] = same.id; if (due) db.run("UPDATE memories SET due_at = ?, importance = MAX(COALESCE(importance, 0), 8) WHERE id = ?", [due, same.id]);
           same.topics = merged; if (boost) { same.strength = Math.min(same.strength + 1, 20); strengthened++; strengthenedIds.push(same.id); }
         } else {
           db.run("INSERT INTO memories(text, topics, kind, strength, chat_id, created_at, updated_at, valid_from, valid_to, learned_at, src, importance, mtype, src_msg, src_quote, due_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [text, topics.join(","), kind, chatId, now(), now(), vdate(f?.from), vdate(f?.until), now(), src, imp, mtype, msgId, (f?.quote ?? quote) ? String(f?.quote ?? quote).slice(0, 240) : null, due]);
-          const nid = rows("SELECT last_insert_rowid() AS id")[0].id; ids[fi] = nid; { const b = Number.isInteger(f?.because) ? ids[f.because] : null; if (b && b !== nid) db.run("INSERT OR IGNORE INTO causal(cause, effect) VALUES (?, ?)", [b, nid]); } linkEntities(nid, f?.entities, f?.rel); const nr = { id: nid, text, topics, kind, strength: 1, at: now(), src, mtype, importance: imp }; for (const o of sharedCandidates(idx, w)) { if (o.id === nid || !o.topics.some((t) => topics.includes(t))) continue; const why = conflictReason(text, o.text); if (why) { if (why.startsWith("разные") && /(теперь|сейчас|уже|переех)/.test(norm(text))) db.run("UPDATE memories SET valid_to = ? WHERE id = ? AND valid_to IS NULL", [now().slice(0, 10), o.id]); else addDispute(nid, o.id, why); } } existing.push(nr); addIdx(idx, nr, existing.length); added++; addedIds.push(nid);
+          const nid = rows("SELECT last_insert_rowid() AS id")[0].id; ids[fi] = nid; autoEquip(nid, text); { const b = Number.isInteger(f?.because) ? ids[f.because] : null; if (b && b !== nid) db.run("INSERT OR IGNORE INTO causal(cause, effect) VALUES (?, ?)", [b, nid]); } linkEntities(nid, f?.entities, f?.rel); const nr = { id: nid, text, topics, kind, strength: 1, at: now(), src, mtype, importance: imp }; for (const o of sharedCandidates(idx, w)) { if (o.id === nid || !o.topics.some((t) => topics.includes(t))) continue; const why = conflictReason(text, o.text); if (why) { if (why.startsWith("разные") && /(теперь|сейчас|уже|переех)/.test(norm(text))) db.run("UPDATE memories SET valid_to = ? WHERE id = ? AND valid_to IS NULL", [now().slice(0, 10), o.id]); else addDispute(nid, o.id, why); } } existing.push(nr); addIdx(idx, nr, existing.length); added++; addedIds.push(nid);
         }
       }
       if (added || strengthened) save();
@@ -403,11 +431,33 @@ export async function openDb(root) {
     /** Сущности: люди, места, организации, техника — с их связями и воспоминаниями. */
     entityList: () => {
       const mems = new Map(memRows().map((m) => [m.id, m])), rel = rows("SELECT s.name AS s, r.rel AS r, o.name AS o, r.memory_id AS mid, r.subj AS subj, r.obj AS obj FROM relations r JOIN entities s ON s.id = r.subj JOIN entities o ON o.id = r.obj");
-      return rows("SELECT e.id, e.name, (SELECT group_concat(memory_id) FROM mem_entities x WHERE x.entity_id = e.id) AS mids FROM entities e").map((e) => {
+      const al = rows("SELECT entity_id AS id, key FROM entity_alias WHERE user = 1"), pn = new Map(rows("SELECT id, name FROM entities").map((r) => [r.id, r.name]));
+      return rows("SELECT e.id, e.name, e.etype AS type, e.parent AS parent, (SELECT group_concat(memory_id) FROM mem_entities x WHERE x.entity_id = e.id) AS mids FROM entities e").map((e) => {
         const ids = String(e.mids ?? "").split(",").filter(Boolean).map(Number).filter((i) => mems.has(i));
-        return { id: e.id, name: e.name, memories: ids, relations: rel.filter((r) => (r.subj === e.id || r.obj === e.id) && (r.mid == null || mems.has(r.mid))).map((r) => ({ s: r.s, r: r.r, o: r.o, past: Boolean(mems.get(r.mid)?.validTo) })) };
+        return { id: e.id, name: e.name, type: e.type ?? null, typeLabel: equip.TYPE_LABEL[e.type] ?? null, parent: e.parent ? pn.get(e.parent) ?? null : null, aliases: al.filter((a) => a.id === e.id).map((a) => a.key), memories: ids, relations: rel.filter((r) => (r.subj === e.id || r.obj === e.id) && (r.mid == null || mems.has(r.mid))).map((r) => ({ s: r.s, r: r.r, o: r.o, past: Boolean(mems.get(r.mid)?.validTo) })) };
       }).filter((e) => e.memories.length).sort((a, b) => b.memories.length - a.memories.length).slice(0, 100);
     },
+    /** История единицы техники (и марки, и модели, и узла): путь в иерархии, состав, события по датам, ближайший срок. */
+    unitHistory: (id) => {
+      const e = rows("SELECT id, name, etype AS type, parent FROM entities WHERE id = ?", [id])[0]; if (!e) return null;
+      const path = []; for (let p = e.parent, k = 0; p && k < 4; k++) { const r = rows("SELECT id, name, parent FROM entities WHERE id = ?", [p])[0]; if (!r) break; path.unshift({ id: r.id, name: r.name }); p = r.parent; }
+      const kids = rows("SELECT id, name, etype AS type FROM entities WHERE parent = ?", [id]), mems = new Map(memRows().map((m) => [m.id, m]));
+      const cnt = (eid) => rows("SELECT memory_id AS m FROM mem_entities WHERE entity_id = ?", [eid]).filter((r) => mems.has(r.m)).length;
+      const own = [id, ...kids.filter((k) => k.type === "part").map((k) => k.id)], seen = new Set(), today = now().slice(0, 10);
+      const events = own.flatMap((eid) => rows("SELECT memory_id AS m FROM mem_entities WHERE entity_id = ?", [eid]).map((r) => r.m)).filter((m) => mems.has(m) && !seen.has(m) && seen.add(m)).map((m) => mems.get(m))
+        .map((m) => ({ id: m.id, text: m.text, when: m.validFrom ?? String(m.createdAt).slice(0, 10), past: Boolean(m.validTo && m.validTo < today), dueAt: m.dueAt ?? null, conf: Math.round(m.conf * 100) / 100 })).sort((a, b) => a.when.localeCompare(b.when) || a.id - b.id);
+      const next = events.filter((x) => x.dueAt && x.dueAt >= today).sort((a, b) => a.dueAt.localeCompare(b.dueAt))[0] ?? null;
+      return { id: e.id, name: e.name, type: e.type, typeLabel: equip.TYPE_LABEL[e.type] ?? null, path, children: kids.map((k) => ({ id: k.id, name: k.name, type: k.type, typeLabel: equip.TYPE_LABEL[k.type] ?? null, n: cnt(k.id) })).sort((a, b) => b.n - a.n), events: events.slice(-60), total: events.length, next: next ? { id: next.id, text: next.text, due: next.dueAt } : null };
+    },
+    /** Свой словарь: «бортовой» → эта машина. Уже записанные факты со словом тоже привязываются. */
+    addAlias: (id, alias) => {
+      const key = ekey(String(alias ?? "")); if (key.length < 3 || !rows("SELECT 1 AS x FROM entities WHERE id = ?", [id]).length) return { error: "Слишком короткое слово" };
+      const other = rows("SELECT id FROM entities WHERE key = ?", [key])[0]; if (other && other.id !== id) return { error: "Так уже называется другая сущность" };
+      db.run("INSERT OR REPLACE INTO entity_alias(key, entity_id, user) VALUES (?, ?, 1)", [key, id]);
+      let n = 0; for (const m of memRows()) if ((" " + norm(m.text) + " ").includes(" " + key + " ")) { db.run("INSERT OR IGNORE INTO mem_entities(memory_id, entity_id) VALUES (?, ?)", [m.id, id]); n++; }
+      cache = null; save(); return { ok: true, linked: n };
+    },
+    removeAlias: (id, key) => { db.run("DELETE FROM entity_alias WHERE entity_id = ? AND key = ? AND user = 1", [id, ekey(String(key ?? ""))]); cache = null; save(); return { ok: true }; },
     /** Векторы воспоминаний: ещё не посчитанные, запись и сводка. */
     missingVecs: (limit = 32) => rows("SELECT m.id, m.text FROM memories m LEFT JOIN vectors v ON v.memory_id = m.id WHERE v.memory_id IS NULL ORDER BY m.id DESC LIMIT ?", [limit]),
     memoriesByIds: (ids) => memRows().filter((m) => ids.includes(m.id)).map((m) => ({ id: m.id, text: m.text })),
@@ -431,6 +481,7 @@ export async function openDb(root) {
       chats: rows("SELECT id, title, created_at AS createdAt FROM chats ORDER BY id"),
       messages: rows("SELECT id, chat_id AS chatId, role, content, created_at AS createdAt FROM messages ORDER BY id"),
       causal: rows("SELECT cause, effect FROM causal"),
+      aliases: rows("SELECT e.name AS entity, a.key AS alias FROM entity_alias a JOIN entities e ON e.id = a.entity_id WHERE a.user = 1"),
       memories: memRows(true).map(({ vec, chatTitle, ...m }) => m).sort((a, b) => a.id - b.id).map((m) => ({ ...m, entities: rows("SELECT e.name FROM mem_entities x JOIN entities e ON e.id = x.entity_id WHERE x.memory_id = ?", [m.id]).map((r) => r.name), rels: rows("SELECT s.name AS s, r.rel AS r, o.name AS o FROM relations r JOIN entities s ON s.id = r.subj JOIN entities o ON o.id = r.obj WHERE r.memory_id = ?", [m.id]) })),
     }),
     /** Заменяет всё содержимое данными из копии. Всё или ничего: при ошибке остаётся прежнее. */
@@ -444,6 +495,8 @@ export async function openDb(root) {
         for (const c of d.chats) db.run("INSERT INTO chats(id, title, created_at) VALUES (?, ?, ?)", [Number(c.id), S(c.title, 80) || "Чат", S(c.createdAt, 40) || now()]);
         let nm = 0; for (const m of d.messages) { if (!ids.has(Number(m?.chatId)) || (m.role !== "user" && m.role !== "assistant")) continue; db.run("INSERT INTO messages(id, chat_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)", [Number(m.id), Number(m.chatId), m.role, S(m.content, 200000), S(m.createdAt, 40) || now()]); nm++; }
         let nmem = 0; for (const m of d.memories) { const text = S(m?.text, 200).trim(), topics = cleanTopics(Array.isArray(m?.topics) ? m.topics : String(m?.topics ?? "").split(",")); if (text.length < 3 || !topics.length) continue; db.run("INSERT INTO memories(id, text, topics, kind, strength, chat_id, created_at, updated_at, pinned, state, replaced_by, used_at, valid_from, valid_to, learned_at, src, importance, mtype, ev_against, src_msg, src_quote, proof, due_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [Number(m.id), text, topics.join(","), m.kind === "note" ? "note" : "fact", Math.min(20, Math.max(1, Number(m.strength) || 1)), ids.has(Number(m.chatId)) ? Number(m.chatId) : null, S(m.createdAt, 40) || now(), S(m.updatedAt ?? m.at, 40) || now(), m.pinned ? 1 : 0, m.state === "archived" || m.state === "replaced" ? m.state : null, Number.isInteger(m.replacedBy) ? m.replacedBy : null, S(m.usedAt, 40) || null, vdate(m.validFrom), vdate(m.validTo), S(m.learnedAt, 40) || S(m.createdAt, 40) || now(), ["user", "reflect", "tool", "sleep", "chat"].includes(m.src) ? m.src : null, impOf(m.importance), MTYPES.has(m.mtype) ? m.mtype : null, Math.max(0, Math.min(50, Number(m.against) || 0)), Number.isInteger(m.srcMsg) ? m.srcMsg : null, m.quote ? S(m.quote, 240) : null, m.proof ? S(m.proof, 200) : null, vdue(m.dueAt)]); if (Array.isArray(m.entities) || Array.isArray(m.rels)) { linkEntities(Number(m.id), m.entities, null); for (const r of (Array.isArray(m.rels) ? m.rels : []).slice(0, 5)) linkEntities(Number(m.id), [], r); } nmem++; }
+        for (const m of d.memories) if (Number.isInteger(m?.id)) { const t = S(m.text, 200); if (t.length >= 3) autoEquip(Number(m.id), t); }
+        for (const a of (isArr(d.aliases) ? d.aliases : [])) { const eid = entityId(S(a?.entity, 40)), key = ekey(S(a?.alias, 40)); if (eid && key.length >= 3) db.run("INSERT OR REPLACE INTO entity_alias(key, entity_id, user) VALUES (?, ?, 1)", [key, eid]); }
         for (const c of (isArr(d.causal) ? d.causal : [])) { if (Number.isInteger(c?.cause) && Number.isInteger(c?.effect)) db.run("INSERT OR IGNORE INTO causal(cause, effect) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?) AND EXISTS (SELECT 1 FROM memories WHERE id = ?)", [c.cause, c.effect, c.cause, c.effect]); }
         db.run("COMMIT"); save(); vecs.clear(); vecsLoaded = false; semCache = { key: "", pairs: [] };
         return { ok: true, chats: d.chats.length, messages: nm, memories: nmem };
@@ -724,5 +777,9 @@ export async function openDb(root) {
       return { chats, messages, links };
     },
   };
+  if (rows("SELECT value FROM meta WHERE key = 'equip_scan'")[0]?.value !== "1") { // один раз: старые факты тоже получают типы, иерархию и привязку к технике
+    try { db.run("BEGIN"); for (const m of memRows()) autoEquip(m.id, m.text); db.run("COMMIT"); } catch { try { db.run("ROLLBACK"); } catch { /* уже откачено */ } }
+    db.run("INSERT INTO meta(key, value) VALUES ('equip_scan', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"); cache = null; store.save();
+  }
   return api;
 }
