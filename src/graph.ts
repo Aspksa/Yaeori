@@ -140,7 +140,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   }
 
   const msgsOf = (grp: string) => order.filter((n) => n.kind === "msg" && n.grp === grp);
-  const radius = (n: N) => o.layout === "sectors" && n.kind === "msg" ? (neu(n) ? 2 + Math.min(n.hits ?? 1, 10) * 0.24 : 1.8) * dotK * o.size * (n.key2 ? 1.6 : 1) : o.layout === "sectors" && n.kind === "hub" ? 4.5 * dotK * o.size : n.kind === "msg" && neu(n) ? (4.2 + Math.min(n.hits ?? 1, 12) * 0.75) * o.size * (n.key2 ? 1.2 : 1) : n.kind === "core" ? 26 : n.kind === "sys" ? 14 : n.kind === "hub" ? (8 + Math.sqrt(n.size) * 0.9) * o.size : (n.key2 ? 4.6 : 2.7 + Math.min(Math.log10(n.size + 1), 3) * 0.5) * o.size;
+  const radius = (n: N) => o.layout === "sectors" && n.kind === "msg" ? (neu(n) ? 1.5 + Math.min(n.hits ?? 1, 10) * 0.12 : 1.5) * dotK * o.size * (n.key2 ? 1.7 : 1) : o.layout === "sectors" && n.kind === "hub" ? 3 * dotK * o.size : n.kind === "msg" && neu(n) ? (4.2 + Math.min(n.hits ?? 1, 12) * 0.75) * o.size * (n.key2 ? 1.2 : 1) : n.kind === "core" ? 26 : n.kind === "sys" ? 14 : n.kind === "hub" ? (8 + Math.sqrt(n.size) * 0.9) * o.size : (n.key2 ? 4.6 : 2.7 + Math.min(Math.log10(n.size + 1), 3) * 0.5) * o.size;
 
   let sectors: { a0: number; a1: number; hue: number }[] = [], slots: { x: number; y: number; hue: number }[] = [], dotK = 1;
   function targets() {
@@ -152,20 +152,24 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     const core = nodes.get("core")!;
     if (o.layout === "sectors") {
       core.tx = 0; core.ty = 0; slots = [];
-      const items = hubs.map((hb) => { const off = collapsed.has(hb.key), ms = off ? [] : msgsOf(hb.grp).sort((x, y) => Date.parse(x.at) - Date.parse(y.at)); return { hb, ms, cap: off ? 0 : Math.max(18, Math.ceil((ms.length * 1.5) / 6) * 6 + 6) }; });
-      const capSum = items.reduce((t, i) => t + i.cap, 0) || 1, gapA = 0.045, usable = TAU - gapA * items.length, rin = R * 0.3, rout = R * 0.9;
-      const g = Math.max(6, Math.min(30, Math.sqrt(((usable / TAU) * Math.PI * (rout * rout - rin * rin)) / capSum) * 0.92));
+      // клин на тему: шаг сетки одинаков, ширина — по числу воспоминаний, глубина — сколько нужно
+      const items = hubs.map((hb) => { const off = collapsed.has(hb.key), ms = off ? [] : msgsOf(hb.grp).sort((x, y) => Date.parse(x.at) - Date.parse(y.at)); return { hb, ms, cap: off ? 0 : Math.max(12, Math.ceil((ms.length * 1.4) / 4) * 4 + 4) }; });
+      const wts = items.map((i) => Math.pow(i.cap, 0.72)), wsum = wts.reduce((t, x) => t + x, 0) || 1, gapA = 0.13, usable = TAU - gapA * items.length, rin = R * 0.46, rout = R * 0.92;
+      const spans = wts.map((x) => (usable * x) / wsum);
+      const colsOf = (span: number, g: number) => Math.max(1, Math.floor((span * rin) / g)), depth = (g: number) => items.reduce((mx, it, i) => Math.max(mx, rin + Math.ceil(it.cap / colsOf(spans[i]!, g)) * g), 0);
+      let g = 6; for (const c of [30, 26, 22, 19, 16, 14, 12, 10, 9, 8, 7]) if (depth(c) <= rout) { g = c; break; }
+      dotK = Math.max(1, Math.min(2.8, g / 9));
       let at = -1.5708 + rot;
-      for (const it of items) {
-        const wA = (usable * it.cap) / capSum, a0 = at + gapA / 2, a1 = a0 + wA; at += wA + gapA;
-        let r = rin, k = 0, last = rin;
+      items.forEach((it, i) => {
+        const a0 = at + gapA / 2, a1 = a0 + spans[i]!; at += spans[i]! + gapA;
+        let r = rin, k = 0, last = rin; const cols = colsOf(spans[i]!, g);
         while (k < it.cap) {
-          const cols = Math.max(1, Math.floor(((a1 - a0) * r) / g)), n = Math.min(cols, it.cap - k);
+          const n = Math.min(cols, it.cap - k);
           for (let c = 0; c < n; c++) { const aa = a0 + ((c + 0.5) / cols) * (a1 - a0), x = Math.cos(aa) * r, y = Math.sin(aa) * r, m = it.ms[k + c]; if (m) { m.tx = x; m.ty = y; } else slots.push({ x, y, hue: it.hb.hue }); }
-          k += n; last = r; r += g * 0.95;
+          k += n; last = r; r += g;
         }
-        dotK = Math.max(1, Math.min(2.8, g / 9)); const mid = (a0 + a1) / 2, hr = Math.min(last + 14 + 4 * dotK, R * 1.0); it.hb.tx = Math.cos(mid) * hr; it.hb.ty = Math.sin(mid) * hr;
-      }
+        const mid = (a0 + a1) / 2, hr = Math.min(last + 14 + 4 * dotK, R * 1.0); it.hb.tx = Math.cos(mid) * hr; it.hb.ty = Math.sin(mid) * hr;
+      });
     } else if (o.layout === "rings") {
       const tot = order.filter((n) => n.kind === "msg" && n.visible).length, g = (order.some(neu) ? Math.max(11, 24 - tot * 0.12) : 8.5 + 8 * Math.max(0, 1 - tot / 250)) * o.size, r0 = R * (0.3 + 0.2 * Math.max(0, 1 - tot / 120)), wts = hubs.map((hb) => Math.pow(Math.max(msgsOf(hb.grp).length, 3), 0.6)), wsum = wts.reduce((x, y) => x + y, 0) || 1;
       let at = 0;
@@ -351,6 +355,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     if (o.links) for (const l of data.links) {
       const a = byKey.get("m" + l.a), b = byKey.get("m" + l.b); if (!a || !b || !a.visible || !b.visible) continue;
       const on = hover && (hover.key === a.key || hover.key === b.key || (hover.kind === "hub" && (a.chatId === hover.chatId || b.chatId === hover.chatId)));
+      if (o.layout === "sectors" && !on) continue;
       if (hover && !on && (hover.kind === "msg" || hover.kind === "hub")) continue;
       const pa = toScreen(a.x, a.y), pb = toScreen(b.x, b.y), mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
       ctx.strokeStyle = on ? pal.text : pal.muted; const nl = neu(a); ctx.globalAlpha = (on ? 0.9 : nl ? 0.24 : 0.16) * Math.min(1, 0.5 + l.w * 0.25); ctx.lineWidth = (on ? 1.4 : 1) + (nl ? Math.min(2.2, (l.w - 1) * 0.7) : 0);
@@ -384,7 +389,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       else if (n.kind === "hub" && !isArea(n)) { ctx.beginPath(); ctx.roundRect(p.x - r, p.y - r, r * 2, r * 2, r * 0.35); ctx.fill(); }
       else { ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill(); }
       // свечение у ключевых, выбранных, найденных и наведённых
-      if (n.kind === "hub" || n === hover || (n.kind === "msg" && n.key2 && (neu(n) || n.chatId === selected)) || n.tier === "fresh" || (query && hit)) {
+      if (n.kind === "hub" || n === hover || (n.kind === "msg" && n.key2 && (o.layout !== "sectors" && neu(n) || n.chatId === selected)) || (n.tier === "fresh" && o.layout !== "sectors") || (query && hit)) {
         ctx.globalAlpha = n === hover ? 0.55 : 0.28; ctx.strokeStyle = n.kind === "hub" ? hue(n) : (query && hit) ? pal.text : ctx.fillStyle as string; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(p.x, p.y, r + 4 + (still ? 0 : Math.sin(now * 0.003) * 1.2), 0, TAU); ctx.stroke();
         if (n === hover) { ctx.globalAlpha = 0.25; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(p.x, p.y, r + 9, 0, TAU); ctx.stroke(); }
       }
