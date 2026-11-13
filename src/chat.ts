@@ -180,22 +180,31 @@ export function mountHome(): () => void {
     let acc = "", frame = 0, failed = false;
     const paint = () => { frame = 0; out.innerHTML = renderText(acc); thread.scrollTop = thread.scrollHeight; };
     const my = new AbortController(); ctrl = my; setBusy(true);
+    let answered = false; graph.flow(["chat:" + id, "core"], "user"); graph.think(true);
     try {
       await sendMessage(id, text, (e) => {
         if (e.user) void refreshGraph();
-        if (e.delta) { acc += e.delta; if (!frame) frame = requestAnimationFrame(paint); }
+        if (e.recalled?.length) {
+          e.recalled.slice(0, 8).forEach((m, i) => graph.flow(["mem:" + m.id, "core", "chat:" + id], "bot", 200 + i * 150));
+          const n = document.createElement("div"); n.className = "msg notice"; const shown = e.recalled.slice(0, 3).map((m) => m.text.replace(/\.$/, "")).join(" · ");
+          n.textContent = `Вспомнила (${e.recalled.length}): ${shown.length > 140 ? shown.slice(0, 139) + "…" : shown}`; thread.insertBefore(n, out);
+        }
+        if (e.delta) { if (!answered) { answered = true; graph.think(false); graph.flow(["core", "chat:" + id], "bot"); } acc += e.delta; if (!frame) frame = requestAnimationFrame(paint); }
         if (e.notice) { const n = document.createElement("div"); n.className = "msg notice"; n.textContent = e.notice; thread.insertBefore(n, out); }
-        if (e.error) { failed = true; out.className = "msg error"; out.innerHTML = errorHtml(e); }
+        if (e.error) { graph.think(false); failed = true; out.className = "msg error"; out.innerHTML = errorHtml(e); }
         if (e.done) { if (frame) { cancelAnimationFrame(frame); frame = 0; } paint(); if (ctrl === my) setBusy(false); }
         if (e.brain) {
           const b = e.brain, n = document.createElement("div"); n.className = "msg notice";
           if (b.error) n.textContent = `Память не обновилась: ${b.error.error ?? "ошибка"}`; else if (b.added || b.strengthened) n.textContent = `Мозг: запомнила ${b.added ?? 0}, закрепила ${b.strengthened ?? 0}`;
           if (n.textContent) { thread.appendChild(n); thread.scrollTop = thread.scrollHeight; }
-          void refreshGraph();
+          void refreshGraph().then(() => {
+            (b.addedIds ?? []).forEach((x, i) => graph.flow(["chat:" + id, "core", "mem:" + x], "user", i * 180));
+            if (b.strengthenedIds?.length) graph.flash(b.strengthenedIds.map((x) => "mem:" + x), "accent");
+          });
         }
       }, my.signal);
     } catch (e) { if ((e as Error).name !== "AbortError") { failed = true; out.className = "msg error"; out.innerHTML = errorHtml({ error: (e as Error).message }); } }
-    if (frame) cancelAnimationFrame(frame);
+    graph.think(false); if (frame) cancelAnimationFrame(frame);
     if (!failed) paint(); else if (!acc) { /* сообщение об ошибке уже в пузыре */ }
     if (ctrl === my) { ctrl = null; if (!dead) setBusy(false); } if (!dead) { void refreshChats(); void refreshGraph(); }
   }

@@ -65,7 +65,7 @@ export async function openDb(root) {
     // ——— Память ———
     /** Сохраняет факты. Повтор (то же или очень похожее) усиливает старую запись, а не плодит новую. boost:false — без усиления (сканирование старых бесед). */
     remember: (facts, chatId = null, { boost = true } = {}) => {
-      let added = 0, strengthened = 0;
+      let added = 0, strengthened = 0; const addedIds = [], strengthenedIds = [];
       const existing = memRows();
       for (const f of Array.isArray(facts) ? facts : []) {
         const text = String(f?.text ?? "").replace(/\s+/g, " ").trim().slice(0, 200), topics = cleanTopics(f?.topics);
@@ -75,14 +75,14 @@ export async function openDb(root) {
         if (same) {
           const merged = [...new Set([...same.topics, ...topics])].slice(0, 3);
           db.run("UPDATE memories SET strength = ?, topics = ?, updated_at = ? WHERE id = ?", [boost ? Math.min(same.strength + 1, 20) : same.strength, merged.join(","), boost ? now() : same.at, same.id]);
-          same.topics = merged; if (boost) { same.strength = Math.min(same.strength + 1, 20); strengthened++; }
+          same.topics = merged; if (boost) { same.strength = Math.min(same.strength + 1, 20); strengthened++; strengthenedIds.push(same.id); }
         } else {
           db.run("INSERT INTO memories(text, topics, kind, strength, chat_id, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)", [text, topics.join(","), kind, chatId, now(), now()]);
-          existing.push({ id: rows("SELECT last_insert_rowid() AS id")[0].id, text, topics, kind, strength: 1, at: now() }); added++;
+          const nid = rows("SELECT last_insert_rowid() AS id")[0].id; existing.push({ id: nid, text, topics, kind, strength: 1, at: now() }); added++; addedIds.push(nid);
         }
       }
       if (added || strengthened) save();
-      return { added, strengthened };
+      return { added, strengthened, addedIds, strengthenedIds };
     },
     /** Какие воспоминания подсказать модели: совпавшие с текущим сообщением, затем сильные и свежие. */
     recall: (text, n = 12) => {

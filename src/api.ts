@@ -41,7 +41,7 @@ export const forgetMemory = (id: number) => call<{ ok: true }>(`/api/memories/${
 export const forgetAll = () => call<{ ok: true }>("/api/memories", { method: "DELETE" });
 export const scanMemories = () => call<ScanResult>("/api/memories/scan", { method: "POST", body: "{}" });
 
-export type StreamEvent = Explained & { user?: number; delta?: string; assistant?: number; done?: boolean; notice?: string; brain?: { added?: number; strengthened?: number; error?: Explained } };
+export type StreamEvent = Explained & { user?: number; delta?: string; assistant?: number; done?: boolean; notice?: string; recalled?: { id: number; text: string }[]; brain?: { added?: number; strengthened?: number; addedIds?: number[]; strengthenedIds?: number[]; error?: Explained } };
 /** Отправляет сообщение и отдаёт события ответа по мере прихода. Отмена через signal. */
 export async function sendMessage(id: number, text: string, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
   const r = await fetch(`/api/chats/${id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }), signal });
