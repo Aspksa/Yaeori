@@ -122,7 +122,7 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     else if (d.arch) { archOpen = !archOpen; if (archOpen) { void h.inactive().then((x) => { inact = x; render(); }); } render(); }
     else if (d.restore) { inact = inact?.filter((x) => x.id !== Number(d.restore)) ?? null; void h.restore(Number(d.restore)); render(); }
     else if (d.skipCf) { rev?.conflicts.splice(Number(d.skipCf), 1); render(); }
-    else if (d.ent) { const id = Number(d.ent); if (entOpen.has(id)) entOpen.delete(id); else entOpen.add(id); render(); }
+    else if (d.ent) { const id = Number(d.ent), e = ents?.find((x) => x.id === id); if (entOpen.has(id)) { entOpen.delete(id); locked = null; h.pin([]); } else { entOpen.clear(); entOpen.add(id); if (e) { locked = "ent:" + id; h.pin(e.memories.map((m) => "mem:" + m)); h.focus("mem:" + e.memories[0]); } } render(); }
     else if (d.pin) { const m = st.brain?.messages.find((x) => x.id === Number(d.pin)); void h.edit(Number(d.pin), { pinned: !m?.pinned }); }
     else if (d.edit) { editing = Number(d.edit); render(); root.querySelector<HTMLTextAreaElement>(".ls-edit textarea")?.focus(); }
     else if (d.cancel) { editing = null; render(); }

@@ -138,7 +138,7 @@ export function mountHome(): () => void {
     try {
       const [br, ch] = await Promise.all([getBrain().catch(() => null), getGraph()]); if (dead) return;
       const g = br ? mergeMap(br, ch) : ch, nn = br?.messages.length ?? 0;
-      graph.update(g); graph.select(current || null); lastBrain = br; syncList(); void pollVec();
+      graph.update(g); void getEntities().then((r) => { if (!dead) graph.setEntities(r.items); }, () => { /* без сущностей карта работает */ }); graph.select(current || null); lastBrain = br; syncList(); void pollVec();
       const st = g.stats, chatMsgs = ch.messages.length;
       stats.innerHTML = `<i class="live"></i><span${st ? ` title="${st.next ? `До следующего уровня: ${st.next - st.memories}` : "Высший уровень"}"` : ""}>${nn} воспом. · ${st?.topics ?? 0} тем · ${chatMsgs} сообщ. · ${ch.chats.length} чатов${st ? ` · «${esc(st.levelName)}»` : ""}</span>`;
       empty.hidden = g.messages.length > 0;
@@ -220,8 +220,8 @@ export function mountHome(): () => void {
           if (b.error) n.textContent = `Память не обновилась: ${b.error.error ?? "ошибка"}`; else if (b.added || b.strengthened) n.textContent = `Мозг: запомнила ${b.added ?? 0}, закрепила ${b.strengthened ?? 0}`;
           if (n.textContent) { thread.appendChild(n); thread.scrollTop = thread.scrollHeight; }
           void refreshGraph().then(() => {
-            (b.addedIds ?? []).forEach((x, i) => graph.flow(["chat:" + id, "core", "mem:" + x], "user", i * 180));
-            if (b.strengthenedIds?.length) graph.flash(b.strengthenedIds.map((x) => "mem:" + x), "accent");
+            (b.addedIds ?? []).forEach((x, i) => graph.flow(["chat:" + id, "core", "mem:" + x], "mint", i * 180));
+            if (b.strengthenedIds?.length) graph.flash(b.strengthenedIds.map((x) => "mem:" + x), "gold");
           });
         }
       }, my.signal);
