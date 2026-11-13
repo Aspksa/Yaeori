@@ -276,3 +276,10 @@ button.pill{border:0;font:inherit;font-size:var(--fs-sm);font-weight:600;cursor:
 .ls-sum { margin: 2px 0 6px; padding: 0 10px; font-size: 12px; line-height: 1.45; color: var(--muted, #9a9aa5); }
 .ls-more { display: block; width: calc(100% - 20px); margin: 6px 10px 10px; padding: 7px 10px; border: 1px dashed currentColor; border-radius: 8px; background: none; color: inherit; font: inherit; font-size: 12px; opacity: .7; cursor: pointer; }
 .ls-more:hover, .ls-more:focus-visible { opacity: 1; }
+.msg.notice details > summary { cursor: pointer; list-style: none; }
+.msg.notice details > summary::-webkit-details-marker { display: none; }
+.rc-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 6px 0 0; font-size: 12px; }
+.rc-row > span { flex: 1 1 100%; }
+.rc-b { padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: none; color: inherit; font: inherit; font-size: 11px; cursor: pointer; opacity: .8; }
+.rc-b:hover:not(:disabled), .rc-b:focus-visible { opacity: 1; background: var(--hover); }
+.rc-b:disabled { opacity: .45; cursor: default; }

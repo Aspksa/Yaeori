@@ -1,4 +1,4 @@
-import { createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
+import { confirmMemory, correctMemory, getSleep, runSleep, createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
 import { mountList } from "./list";
 import { esc as mdEsc, renderText } from "./md";
 export { renderText };
@@ -74,6 +74,7 @@ export function mountHome(): () => void {
     review: () => reviewMemories(), merge: (k, d, hs) => mergeMemories(k, d, hs).then(() => refreshGraph()),
     compress: (ids, text, topic) => compressMemories(ids, text, topic).then(() => refreshGraph()),
     inactive: () => getInactive().then((r) => r.items), entities: () => getEntities().then((r) => r.items), restore: (id) => restoreMemory(id).then(() => refreshGraph()),
+    sleepInfo: () => getSleep(), sleep: () => runSleep().then((r) => { void refreshGraph(); return r; }),
     build: () => { building = true; syncList(); void buildVectors().then((v) => { vec = v; }, () => {}).finally(() => { building = false; syncList(); void refreshGraph(); }); },
     setEmbedModel: (m) => void saveConn({ embedModel: m }).then(() => { vec = null; return getVectors(); }).then((v) => { vec = v; }, () => {}).finally(syncList) });
   let vecTimer = 0;
@@ -212,7 +213,18 @@ export function mountHome(): () => void {
         if (e.recalled?.length) {
           e.recalled.slice(0, 8).forEach((m, i) => graph.flow(["mem:" + m.id, "core", "chat:" + id], m.hop ? "accent" : "bot", 200 + i * 150));
           const n = document.createElement("div"); n.className = "msg notice"; const nSess = e.recalled.filter((m) => m.session).length, shown = e.recalled.slice(0, 3).map((m) => m.text.replace(/\.$/, "")).join(" · ");
-          n.textContent = `Вспомнила (${e.recalled.length}${nSess ? `, из этой беседы ${nSess}` : ""}): ${shown.length > 140 ? shown.slice(0, 139) + "…" : shown}`; thread.insertBefore(n, out);
+          const head = `Вспомнила (${e.recalled.length}${nSess ? `, из этой беседы ${nSess}` : ""}): ${shown.length > 140 ? shown.slice(0, 139) + "…" : shown}`;
+          // каждое воспоминание можно подтвердить («верно») или исправить: так память учится на ответах
+          const det = document.createElement("details"), sm = document.createElement("summary"); sm.textContent = head; det.append(sm);
+          for (const m of e.recalled.slice(0, 8)) {
+            const row = document.createElement("div"); row.className = "rc-row"; const t = document.createElement("span"); t.textContent = m.text;
+            const ok = document.createElement("button"); ok.type = "button"; ok.className = "rc-b"; ok.textContent = "✓ верно"; ok.title = "Подтвердить: воспоминание стало сильнее";
+            const ed = document.createElement("button"); ed.type = "button"; ed.className = "rc-b"; ed.textContent = "✎ исправить"; ed.title = "Заменить правильной версией (старая останется в истории)";
+            ok.onclick = () => { ok.disabled = true; void confirmMemory(m.id).then(() => { ok.textContent = "✓ учла"; void refreshGraph(); }, () => { ok.disabled = false; }); };
+            ed.onclick = () => { const v = window.prompt("Как правильно?", m.text); if (v && v.trim() && v.trim() !== m.text) void correctMemory(m.id, v.trim()).then((r) => { if (r.ok) { t.textContent = v.trim(); ed.textContent = "✎ исправлено"; ed.disabled = true; ok.disabled = true; void refreshGraph(); } }, () => {}); };
+            row.append(t, ok, ed); det.append(row);
+          }
+          n.append(det); thread.insertBefore(n, out);
         }
         if (e.delta) { if (!answered) { answered = true; graph.think(false); graph.flow(["core", "chat:" + id], "bot"); } acc += e.delta; if (!frame) frame = requestAnimationFrame(paint); }
         if (e.notice) { const n = document.createElement("div"); n.className = "msg notice"; n.textContent = e.notice; thread.insertBefore(n, out); }

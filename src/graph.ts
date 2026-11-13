@@ -84,7 +84,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   let tour: { on: boolean; i: number; at: number } = { on: false, i: -1, at: 0 };
   const seen = new Set<number>();
   interface Fx { keys: string[]; t0: number; dur: number; col: Col; reached: number }
-  let linkKinds = new Set(["topic", "sense", "chat", "entity"]);
+  let linkKinds = new Set(["topic", "sense", "chat", "entity", "habit"]);
   let pin: Set<string> | null = null; const pinNb = new Set<string>();
   let camGoal: { x: number; y: number; k: number } | null = null;
   const fxs: Fx[] = [], rings: { key: string; t0: number; col: Col; burst?: boolean }[] = []; let ents: EntityInfo[] = [], entSel: number | null = null, entHover: number | null = null; let thinking = false, lastThink = 0;
