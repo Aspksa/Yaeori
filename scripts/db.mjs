@@ -314,7 +314,7 @@ export async function openDb(root) {
           linkEntities(same.id, f?.entities, f?.rel); ids[fi] = same.id; if (due) db.run("UPDATE memories SET due_at = ?, importance = MAX(COALESCE(importance, 0), 8) WHERE id = ?", [due, same.id]);
           same.topics = merged; if (boost) { same.strength = Math.min(same.strength + 1, 20); strengthened++; strengthenedIds.push(same.id); }
         } else {
-          db.run("INSERT INTO memories(text, topics, kind, strength, chat_id, created_at, updated_at, valid_from, valid_to, learned_at, src, importance, mtype, src_msg, src_quote, due_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [text, topics.join(","), kind, chatId, now(), now(), vdate(f?.from), vdate(f?.until), now(), src, imp, mtype, msgId, quote ? String(quote).slice(0, 240) : null, due]);
+          db.run("INSERT INTO memories(text, topics, kind, strength, chat_id, created_at, updated_at, valid_from, valid_to, learned_at, src, importance, mtype, src_msg, src_quote, due_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [text, topics.join(","), kind, chatId, now(), now(), vdate(f?.from), vdate(f?.until), now(), src, imp, mtype, msgId, (f?.quote ?? quote) ? String(f?.quote ?? quote).slice(0, 240) : null, due]);
           const nid = rows("SELECT last_insert_rowid() AS id")[0].id; ids[fi] = nid; { const b = Number.isInteger(f?.because) ? ids[f.because] : null; if (b && b !== nid) db.run("INSERT OR IGNORE INTO causal(cause, effect) VALUES (?, ?)", [b, nid]); } linkEntities(nid, f?.entities, f?.rel); const nr = { id: nid, text, topics, kind, strength: 1, at: now(), src, mtype, importance: imp }; for (const o of sharedCandidates(idx, w)) { if (o.id === nid || !o.topics.some((t) => topics.includes(t))) continue; const why = conflictReason(text, o.text); if (why) { if (why.startsWith("разные") && /(теперь|сейчас|уже|переех)/.test(norm(text))) db.run("UPDATE memories SET valid_to = ? WHERE id = ? AND valid_to IS NULL", [now().slice(0, 10), o.id]); else addDispute(nid, o.id, why); } } existing.push(nr); addIdx(idx, nr, existing.length); added++; addedIds.push(nid);
         }
       }
@@ -488,8 +488,9 @@ export async function openDb(root) {
     sleepMaintain: () => { db.run("UPDATE link_weights SET w = w * 0.85"); db.run("DELETE FROM link_weights WHERE w < 0.5"); cache = null; store.save(); },
     getMeta: (k) => rows("SELECT value FROM meta WHERE key = ?", [k])[0]?.value ?? null,
     setMeta: (k, v) => { db.run("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [k, String(v)]); store.save(); },
-    getRecallCfg: () => ({ weights: { ...W }, rerank: rows("SELECT value FROM meta WHERE key = 'rerank'")[0]?.value === "1" }),
-    setRecallCfg: ({ weights, rerank }) => {
+    getRecallCfg: () => ({ weights: { ...W }, rerank: rows("SELECT value FROM meta WHERE key = 'rerank'")[0]?.value === "1", check: rows("SELECT value FROM meta WHERE key = 'check'")[0]?.value !== "0" }),
+    setRecallCfg: ({ weights, rerank, check }) => {
+      if (check !== undefined) db.run("INSERT INTO meta(key, value) VALUES ('check', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [check ? "1" : "0"]);
       if (weights) { const n = (v, d) => (Number.isFinite(Number(v)) ? Math.min(2, Math.max(0, Number(v))) : d); W = { vec: n(weights.vec, W.vec), lex: n(weights.lex, W.lex), imp: n(weights.imp, W.imp) }; db.run("INSERT INTO meta(key, value) VALUES ('weights', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [JSON.stringify(W)]); }
       if (rerank !== undefined) db.run("INSERT INTO meta(key, value) VALUES ('rerank', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [rerank ? "1" : "0"]);
       store.save();
