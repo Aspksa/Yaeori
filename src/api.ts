@@ -1,4 +1,4 @@
-export interface Conn { keySet: boolean; model: string; fallbackModel: string; baseUrl: string }
+export interface Conn { keySet: boolean; model: string; fallbackModel: string; memory: boolean; baseUrl: string }
 export interface Explained { error?: string; hint?: string; code?: number | string; detail?: string }
 export interface CheckResult extends Explained { ok: boolean; models?: string[]; modelFound?: boolean | null; fallbackFound?: boolean | null }
 export interface TestResult extends Explained { ok: boolean; model?: string; ms?: number; text?: string }
@@ -12,7 +12,7 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
   return data;
 }
 export const getConn = () => call<Conn>("/api/settings");
-export const saveConn = (patch: { key?: string | null; model?: string; fallbackModel?: string; baseUrl?: string }) =>
+export const saveConn = (patch: { key?: string | null; model?: string; fallbackModel?: string; memory?: boolean; baseUrl?: string }) =>
   call<Conn>("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
 export const testModel = (model: string) => call<TestResult>("/api/test-model", { method: "POST", body: JSON.stringify({ model }) });
 export const getGuide = () => call<Guide>("/api/errors-guide");
@@ -20,15 +20,28 @@ export const checkConn = () => call<CheckResult>("/api/check", { method: "POST",
 
 export interface ChatInfo { id: number; title: string; createdAt: string; count: number }
 export interface Msg { id: number; role: "user" | "assistant"; content: string; at: string }
-export interface GraphData { chats: { id: number; title: string; count: number }[]; messages: { id: number; chatId: number; role: "user" | "assistant"; preview: string; size: number; at: string }[]; links: { a: number; b: number; w: number; words: string[] }[] }
+export interface BrainStats { memories: number; topics: number; links: number; level: number; levelName: string; next: number | null }
+export interface GraphData {
+  mode?: "memory"; stats?: BrainStats; chats: { id: number; title: string; count: number }[];
+  messages: { id: number; chatId: number; role: "user" | "assistant"; preview: string; size: number; at: string; tier?: string; hits?: number; src?: number }[];
+  links: { a: number; b: number; w: number; words: string[] }[];
+}
+export interface MemoryItem { id: number; text: string; topics: string[]; hits: number; at: string }
+export interface MemoryList { memory: boolean; total: number; items: MemoryItem[] }
+export interface ScanResult extends Explained { ok: boolean; added?: number; strengthened?: number; empty?: boolean }
 
 export const listChats = () => call<ChatInfo[]>("/api/chats");
 export const createChat = () => call<{ id: number }>("/api/chats", { method: "POST", body: "{}" });
 export const getMessages = (id: number) => call<Msg[]>(`/api/chats/${id}`);
 export const deleteChat = (id: number) => call<{ ok: true }>(`/api/chats/${id}`, { method: "DELETE" });
 export const getGraph = () => call<GraphData>("/api/graph");
+export const getBrain = () => call<GraphData>("/api/brain");
+export const getMemories = () => call<MemoryList>("/api/memories");
+export const forgetMemory = (id: number) => call<{ ok: true }>(`/api/memories/${id}`, { method: "DELETE" });
+export const forgetAll = () => call<{ ok: true }>("/api/memories", { method: "DELETE" });
+export const scanMemories = () => call<ScanResult>("/api/memories/scan", { method: "POST", body: "{}" });
 
-export type StreamEvent = Explained & { user?: number; delta?: string; assistant?: number; done?: boolean; notice?: string };
+export type StreamEvent = Explained & { user?: number; delta?: string; assistant?: number; done?: boolean; notice?: string; brain?: { added?: number; strengthened?: number; error?: Explained } };
 /** Отправляет сообщение и отдаёт события ответа по мере прихода. Отмена через signal. */
 export async function sendMessage(id: number, text: string, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
   const r = await fetch(`/api/chats/${id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }), signal });
