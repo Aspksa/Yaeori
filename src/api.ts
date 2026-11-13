@@ -1,4 +1,4 @@
-export interface Conn { keySet: boolean; model: string; fallbackModel: string; memory: boolean; embedModel?: string; baseUrl: string }
+export interface Conn { keySet: boolean; model: string; fallbackModel: string; memory: boolean; tools?: boolean; embedModel?: string; baseUrl: string }
 export interface Explained { error?: string; hint?: string; code?: number | string; detail?: string }
 export interface CheckResult extends Explained { ok: boolean; models?: string[]; modelFound?: boolean | null; fallbackFound?: boolean | null }
 export interface TestResult extends Explained { ok: boolean; model?: string; ms?: number; text?: string }
@@ -12,7 +12,7 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
   return data;
 }
 export const getConn = () => call<Conn>("/api/settings");
-export const saveConn = (patch: { key?: string | null; model?: string; fallbackModel?: string; memory?: boolean; embedModel?: string; baseUrl?: string }) =>
+export const saveConn = (patch: { key?: string | null; model?: string; fallbackModel?: string; memory?: boolean; tools?: boolean; embedModel?: string; baseUrl?: string }) =>
   call<Conn>("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
 export const testModel = (model: string) => call<TestResult>("/api/test-model", { method: "POST", body: JSON.stringify({ model }) });
 export const getGuide = () => call<Guide>("/api/errors-guide");
@@ -56,7 +56,7 @@ export const getVectors = () => call<VecInfo>("/api/vectors");
 export const buildVectors = () => call<VecInfo & Explained>("/api/vectors/build", { method: "POST", body: "{}" });
 export const scanMemories = () => call<ScanResult>("/api/memories/scan", { method: "POST", body: "{}" });
 
-export type StreamEvent = Explained & { user?: number; delta?: string; assistant?: number; done?: boolean; notice?: string; recalled?: { id: number; text: string; hop?: boolean; session?: boolean; past?: boolean; disputed?: boolean }[]; brain?: { added?: number; strengthened?: number; addedIds?: number[]; strengthenedIds?: number[]; error?: Explained } };
+export type StreamEvent = Explained & { user?: number; delta?: string; assistant?: number; done?: boolean; notice?: string; tool?: { name: string; text: string; changed?: boolean }; recalled?: { id: number; text: string; hop?: boolean; session?: boolean; past?: boolean; disputed?: boolean }[]; brain?: { added?: number; strengthened?: number; addedIds?: number[]; strengthenedIds?: number[]; error?: Explained } };
 /** Отправляет сообщение и отдаёт события ответа по мере прихода. Отмена через signal. */
 export async function sendMessage(id: number, text: string, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
   const r = await fetch(`/api/chats/${id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }), signal });
@@ -73,7 +73,11 @@ export async function sendMessage(id: number, text: string, onEvent: (e: StreamE
     }
   }
 }
-export interface SleepInfo { at: string; merged: number; compressed: number; archived: number; backup: string }
+export interface SleepInfo { at: string; merged: number; compressed: number; reflected?: number; archived: number; backup: string; stale?: { checked: number; ok: number } }
+export interface Hypothesis { id: number; text: string; topics: string[]; src: string; at: string }
+export interface AsOf { date: string; total: number; items: { id: number; text: string; topics: string[]; learnedAt: string; validFrom: string | null; validTo: string | null; replaced: boolean }[] }
+export const getHypotheses = () => call<{ items: Hypothesis[] }>("/api/hypotheses");
+export const getAsOf = (date: string, q: string) => call<AsOf>(`/api/asof?date=${encodeURIComponent(date)}&q=${encodeURIComponent(q)}`);
 export const getSleep = () => call<{ last: SleepInfo | null; sleeping: boolean }>("/api/sleep");
 export const runSleep = () => call<SleepInfo>("/api/sleep", { method: "POST", body: "{}" });
 export const confirmMemory = (id: number) => call<{ ok: true }>(`/api/memories/${id}/confirm`, { method: "POST", body: "{}" });

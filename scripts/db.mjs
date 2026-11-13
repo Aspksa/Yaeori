@@ -15,6 +15,7 @@ export async function openDb(root) {
     CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, topics TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'fact',
       strength REAL NOT NULL DEFAULT 1, chat_id INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);`);
   try { const cols = store.cols("memories"); if (!cols.includes("vec")) db.run("ALTER TABLE memories ADD COLUMN vec TEXT"); if (!cols.includes("pinned")) db.run("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"); if (!cols.includes("state")) db.run("ALTER TABLE memories ADD COLUMN state TEXT"); if (!cols.includes("replaced_by")) db.run("ALTER TABLE memories ADD COLUMN replaced_by INTEGER"); if (!cols.includes("used_at")) db.run("ALTER TABLE memories ADD COLUMN used_at TEXT"); if (!cols.includes("valid_from")) db.run("ALTER TABLE memories ADD COLUMN valid_from TEXT"); if (!cols.includes("valid_to")) db.run("ALTER TABLE memories ADD COLUMN valid_to TEXT"); } catch { /* уже есть */ }
+  try { const cols = store.cols("memories"); for (const [c, t] of [["learned_at", "TEXT"], ["src", "TEXT"], ["importance", "REAL"], ["mtype", "TEXT"]]) if (!cols.includes(c)) db.run(`ALTER TABLE memories ADD COLUMN ${c} ${t}`); db.run("UPDATE memories SET learned_at = created_at WHERE learned_at IS NULL"); } catch { /* уже есть */ }
   db.run("CREATE TABLE IF NOT EXISTS vectors (memory_id INTEGER PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE, data BLOB NOT NULL)");
   db.run("CREATE TABLE IF NOT EXISTS chat_summaries (chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE, text TEXT NOT NULL, upto INTEGER NOT NULL, updated_at TEXT NOT NULL)");
   db.run("CREATE TABLE IF NOT EXISTS topic_summaries (topic TEXT PRIMARY KEY, text TEXT NOT NULL, n INTEGER NOT NULL, updated_at TEXT NOT NULL)");
@@ -64,7 +65,7 @@ export async function openDb(root) {
   const memRows = (all = false) => {
     if (!all && cache) return cache.rows;
     loadVecs();
-    const out = rows(`SELECT m.id, m.text, m.topics, m.kind, m.strength, m.chat_id AS chatId, c.title AS chatTitle, m.created_at AS createdAt, m.updated_at AS at, m.pinned AS pinned, m.state AS state, m.replaced_by AS replacedBy, m.used_at AS usedAt, m.valid_from AS validFrom, m.valid_to AS validTo FROM memories m LEFT JOIN chats c ON c.id = m.chat_id ${all ? "" : "WHERE m.state IS NULL"} ORDER BY m.updated_at DESC`)
+    const out = rows(`SELECT m.id, m.text, m.topics, m.kind, m.strength, m.chat_id AS chatId, c.title AS chatTitle, m.created_at AS createdAt, m.updated_at AS at, m.pinned AS pinned, m.state AS state, m.replaced_by AS replacedBy, m.used_at AS usedAt, m.valid_from AS validFrom, m.valid_to AS validTo, m.learned_at AS learnedAt, m.src AS src, m.importance AS importance, m.mtype AS mtype FROM memories m LEFT JOIN chats c ON c.id = m.chat_id ${all ? "" : "WHERE m.state IS NULL"} ORDER BY m.updated_at DESC`)
       .map(({ pinned, ...m }) => ({ ...m, pinned: Boolean(pinned), topics: String(m.topics).split(",").filter(Boolean), vec: vecs.get(m.id) ?? null }));
     if (!all) cache = { rows: out, byId: new Map(out.map((m) => [m.id, m])), idx: null, dd: null };
     return out;
@@ -76,6 +77,11 @@ export async function openDb(root) {
     const r = rows("SELECT id FROM entities WHERE key = ?", [key])[0]; if (r) return r.id;
     db.run("INSERT INTO entities(name, key) VALUES (?, ?)", [nm, key]); return rows("SELECT last_insert_rowid() AS id")[0].id;
   };
+  const MTYPES = new Set(["fact", "preference", "event", "rule"]);
+  const HL = { preference: 2.5, rule: 4, event: 0.3 }; // срок «забывания» зависит от типа: события быстро, правила долго
+  const impOf = (x) => { const n = Number(x); return Number.isFinite(n) && n >= 1 ? Math.min(10, Math.round(n)) : null; };
+  const unconfirmed = (m) => (m.src === "reflect" || m.src === "tool"); // вывод модели или запись «по инструменту», пока человек не подтвердил
+  const INJECT = /(игнорируй|забудь|отмени)\s+(все\s+|предыдущ|прежн|свои|системн)|ignore\s+(all\s+|any\s+)?(previous|prior|above)|system\s*prompt|системн\w+\s+(промпт|инструкц)|ты\s+теперь\s+(не\s+)?(ассистент|помощница|бот)|reveal\s+your/i;
   const SINGULAR = ["живёт", "живет", "работает", "должность", "учится", "переехал"];
   /** Привязывает сущности к воспоминанию и записывает связь «кто — отношение — кто». Для «единственных» отношений (живёт, работает…) прежний факт закрывается датой. */
   const linkEntities = (memId, ents, rel) => {
@@ -92,9 +98,10 @@ export async function openDb(root) {
   };
   const entMap = () => {
     memRows(); if (cache.ent) return cache.ent;
-    const keys = rows("SELECT id, key FROM entities"), byMem = new Map(), count = new Map();
-    for (const r of rows("SELECT me.memory_id AS mid, me.entity_id AS eid FROM mem_entities me JOIN memories m ON m.id = me.memory_id WHERE m.state IS NULL")) { byMem.set(r.mid, [...(byMem.get(r.mid) ?? []), r.eid]); count.set(r.eid, (count.get(r.eid) ?? 0) + 1); }
-    return (cache.ent = { keys, byMem, count });
+    const keys = rows("SELECT id, key FROM entities"), byMem = new Map(), count = new Map(), byEnt = new Map(), rel = new Map();
+    for (const r of rows("SELECT me.memory_id AS mid, me.entity_id AS eid FROM mem_entities me JOIN memories m ON m.id = me.memory_id WHERE m.state IS NULL")) { byMem.set(r.mid, [...(byMem.get(r.mid) ?? []), r.eid]); count.set(r.eid, (count.get(r.eid) ?? 0) + 1); const l = byEnt.get(r.eid) ?? []; if (l.length < 60) l.push(r.mid); byEnt.set(r.eid, l); }
+    for (const r of rows("SELECT r.subj AS a, r.obj AS b FROM relations r LEFT JOIN memories m ON m.id = r.memory_id WHERE r.memory_id IS NULL OR m.state IS NULL")) { if (!rel.has(r.a)) rel.set(r.a, new Set()); if (!rel.has(r.b)) rel.set(r.b, new Set()); rel.get(r.a).add(r.b); rel.get(r.b).add(r.a); }
+    return (cache.ent = { keys, byMem, count, byEnt, rel });
   };
   const dot = (a, b) => { if (!a || !b || a.length !== b.length) return 0; let t = 0; for (let i = 0; i < a.length; i++) t += a[i] * b[i]; return t * (a.s ?? 1) * (b.s ?? 1); };
   // ——— Быстрые индексы: слова (без перебора всех пар), темы с центрами (поиск по ближайшим темам), LSH для векторов ———
@@ -233,13 +240,14 @@ export async function openDb(root) {
       const all = memRows(), keep = all.find((m) => m.id === keepId), drops = all.filter((m) => dropIds.includes(m.id) && m.id !== keepId); if (!keep || !drops.length) return null;
       const topics = [...new Set([...keep.topics, ...drops.flatMap((m) => m.topics)])].slice(0, 3), strength = Math.min(20, keep.strength + drops.reduce((s, m) => s + m.strength, 0)), pinned = keep.pinned || drops.some((m) => m.pinned);
       if (history) { db.run("UPDATE memories SET updated_at = ?, used_at = ? WHERE id = ?", [now(), now(), keepId]); for (const m of drops) db.run("UPDATE memories SET state = 'replaced', replaced_by = ? WHERE id = ?", [keepId, m.id]); }
-      else { db.run("UPDATE memories SET topics = ?, strength = ?, pinned = ?, updated_at = ? WHERE id = ?", [topics.join(","), strength, pinned ? 1 : 0, now(), keepId]); for (const m of drops) { db.run("DELETE FROM memories WHERE id = ?", [m.id]); vecs.delete(m.id); } }
+      else { db.run("UPDATE memories SET topics = ?, strength = ?, pinned = ?, updated_at = ?, src = ? WHERE id = ?", [topics.join(","), strength, pinned ? 1 : 0, now(), unconfirmed(keep) && drops.some((m) => !unconfirmed(m)) ? "chat" : keep.src ?? null, keepId]); for (const m of drops) { db.run("DELETE FROM memories WHERE id = ?", [m.id]); vecs.delete(m.id); } }
       save(); return { ok: true, merged: drops.length };
     };
 
   return {
     file,
     flush: () => store.flush(),
+    ...(process.env.YAEORI_TEST ? { testRun: (sql, p) => { db.run(sql, p); cache = null; store.save(); } } : {}), // только для тестов
     engine: store.kind,
     listChats: () => rows("SELECT c.id, c.title, c.created_at AS createdAt, (SELECT count(*) FROM messages m WHERE m.chat_id = c.id) AS count FROM chats c ORDER BY c.id DESC LIMIT 200"),
     createChat: (title = "Новый чат") => { db.run("INSERT INTO chats(title, created_at) VALUES (?, ?)", [title.slice(0, 80), now()]); save(); return rows("SELECT last_insert_rowid() AS id")[0].id; },
@@ -256,31 +264,34 @@ export async function openDb(root) {
      */
     // ——— Память ———
     /** Сохраняет факты. Повтор (то же или очень похожее) усиливает старую запись, а не плодит новую. boost:false — без усиления (сканирование старых бесед). */
-    remember: (facts, chatId = null, { boost = true } = {}) => {
-      let added = 0, strengthened = 0, skipped = 0; const addedIds = [], strengthenedIds = [];
+    remember: (facts, chatId = null, { boost = true, src = "chat" } = {}) => {
+      let added = 0, strengthened = 0, skipped = 0, blocked = 0; const addedIds = [], strengthenedIds = [];
       const existing = memRows().slice(), idx = wordIdx();
       for (const f of Array.isArray(facts) ? facts : []) {
         const text = String(f?.text ?? "").replace(/\s+/g, " ").trim().slice(0, 200), topics = cleanTopics(f?.topics);
         if (text.length < 6 || !topics.length) continue;
         if (wordsOf(text).size < 2) { skipped++; continue; } // фильтр новизны: пустые реплики не запоминаем
+        if (INJECT.test(text)) { blocked++; continue; } // «память» не принимает команды: попытку подсунуть инструкцию не записываем
+        const mtype = MTYPES.has(f?.mtype) ? f.mtype : null, imp = impOf(f?.importance);
         const kind = f?.kind === "note" ? "note" : "fact", w = wordsOf(text);
         const same = idx.byNorm.get(norm(text)) ?? wordCandidates(idx, w, 0.6).filter((m) => m.topics.some((t) => topics.includes(t)) && jaccard(meta(m).w, w) >= 0.6 && !conflictReason(text, m.text)).sort((a, b) => idx.pos.get(a.id) - idx.pos.get(b.id))[0];
         if (same) {
           const merged = [...new Set([...same.topics, ...topics])].slice(0, 3);
-          db.run("UPDATE memories SET strength = ?, topics = ?, updated_at = ? WHERE id = ?", [boost ? Math.min(same.strength + 1, 20) : same.strength, merged.join(","), boost ? now() : same.at, same.id]);
+          db.run("UPDATE memories SET strength = ?, topics = ?, updated_at = ?, importance = COALESCE(?, importance), mtype = COALESCE(mtype, ?) WHERE id = ?", [boost ? Math.min(same.strength + 1, 20) : same.strength, merged.join(","), boost ? now() : same.at, imp, mtype, same.id]);
+          if (src === "chat" && unconfirmed(same)) { db.run("UPDATE memories SET src = 'chat' WHERE id = ?", [same.id]); same.src = "chat"; } // человек сказал то же сам: запись подтверждена
           if (vdate(f?.until)) db.run("UPDATE memories SET valid_to = ? WHERE id = ?", [vdate(f.until), same.id]);
           linkEntities(same.id, f?.entities, f?.rel);
           same.topics = merged; if (boost) { same.strength = Math.min(same.strength + 1, 20); strengthened++; strengthenedIds.push(same.id); }
         } else {
-          db.run("INSERT INTO memories(text, topics, kind, strength, chat_id, created_at, updated_at, valid_from, valid_to) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)", [text, topics.join(","), kind, chatId, now(), now(), vdate(f?.from), vdate(f?.until)]);
-          const nid = rows("SELECT last_insert_rowid() AS id")[0].id; linkEntities(nid, f?.entities, f?.rel); const nr = { id: nid, text, topics, kind, strength: 1, at: now() }; for (const o of sharedCandidates(idx, w)) { if (o.id === nid || !o.topics.some((t) => topics.includes(t))) continue; const why = conflictReason(text, o.text); if (why) { if (why.startsWith("разные") && /(теперь|сейчас|уже|переех)/.test(norm(text))) db.run("UPDATE memories SET valid_to = ? WHERE id = ? AND valid_to IS NULL", [now().slice(0, 10), o.id]); else addDispute(nid, o.id, why); } } existing.push(nr); addIdx(idx, nr, existing.length); added++; addedIds.push(nid);
+          db.run("INSERT INTO memories(text, topics, kind, strength, chat_id, created_at, updated_at, valid_from, valid_to, learned_at, src, importance, mtype) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [text, topics.join(","), kind, chatId, now(), now(), vdate(f?.from), vdate(f?.until), now(), src, imp, mtype]);
+          const nid = rows("SELECT last_insert_rowid() AS id")[0].id; linkEntities(nid, f?.entities, f?.rel); const nr = { id: nid, text, topics, kind, strength: 1, at: now(), src, mtype, importance: imp }; for (const o of sharedCandidates(idx, w)) { if (o.id === nid || !o.topics.some((t) => topics.includes(t))) continue; const why = conflictReason(text, o.text); if (why) { if (why.startsWith("разные") && /(теперь|сейчас|уже|переех)/.test(norm(text))) db.run("UPDATE memories SET valid_to = ? WHERE id = ? AND valid_to IS NULL", [now().slice(0, 10), o.id]); else addDispute(nid, o.id, why); } } existing.push(nr); addIdx(idx, nr, existing.length); added++; addedIds.push(nid);
         }
       }
       if (added || strengthened) save();
-      return { added, strengthened, skipped, addedIds, strengthenedIds };
+      return { added, strengthened, skipped, blocked, addedIds, strengthenedIds };
     },
     /** Какие воспоминания подсказать модели: совпавшие с текущим сообщением, затем сильные и свежие. */
-    recall: (text, n = 12, qvec = null, chatId = null) => {
+    recall: (text, n = 12, qvec = null, chatId = null, { dry = false } = {}) => {
       const q = norm(text), qw = wordsOf(text), day = 86400000, t = Date.now(), all0 = memRows(), ent = entMap();
       const qt = q.split(" ").filter(Boolean), hitEnt = new Set(ent.keys.filter((e) => e.key.length >= 3 && e.key.split(" ").every((w) => qt.some((x) => x.startsWith(w.slice(0, Math.max(3, w.length - 2)))))).map((e) => e.id)); // падежи: сравниваем по основе слова
       const fts = ftsRanks(qw), lw = linkW(), all1 = qvec && all0.length > PART ? shortlist(all0, qvec, q, ent, hitEnt, chatId, t) : all0, all = fts.size && all1 !== all0 ? [...new Map([...all1, ...all0.filter((m) => fts.has(m.id))].map((m) => [m.id, m])).values()] : all1;
@@ -289,8 +300,8 @@ export async function openDb(root) {
       const sims = vecSims(all, qvec), dp = disputeSet();
       const scored = all.map((m) => {
         const lex = m.topics.filter((x) => q.includes(x)).length * 4 + jaccard(meta(m).w, qw) * 6 + (fts.get(m.id) ?? 0) * 3, sem = Math.max(0, (sims.get(m.id) ?? 0) - 0.25) * 14;
-        const imp = (m.pinned ? 2 : 0) + Math.log(1 + m.strength) + Math.exp(-(t - Date.parse(m.at)) / (60 * day));
-        return { m, score: W.lex * lex + W.vec * sem + W.imp * imp + entBoost(m) - (isPast(m) ? 2 : 0) };
+        const imp = (m.pinned ? 2 : 0) + Math.log(1 + m.strength) + (m.importance ? m.importance / 10 - 0.5 : 0) + Math.exp(-(t - Date.parse(m.at)) / (60 * day));
+        return { m, score: W.lex * lex + W.vec * sem + W.imp * imp + entBoost(m) - (isPast(m) ? 2 : 0) - (unconfirmed(m) ? 1.2 : 0) };
       }).sort((a, b) => b.score - a.score);
       const seeds = mmrPick(scored, Math.max(3, Math.ceil(n * 0.6))).map((x) => x.m), out = seeds.map((m) => ({ ...m, hop: false })), have = new Set(seeds.map((m) => m.id));
       // граф: соседи найденных воспоминаний — по общим темам и по смыслу
@@ -301,12 +312,25 @@ export async function openDb(root) {
         const hab = lw.get(lwKey(sd.id, m.id)) ?? 0;
         if (shared || sim >= 0.78 || hab) near.push({ m, w: shared * 2 + sim * 4 + Math.min(hab, 8) * 0.8 + Math.log(1 + m.strength) });
       }
+      // растекание активации по графу сущностей: найденное будит соседей через общих людей, места, технику и связи между ними (2 шага)
+      const act = new Map(); let front = new Map(seeds.map((m) => [m.id, 1]));
+      for (let hop = 0; hop < 2 && front.size; hop++) {
+        const next = new Map(), put = (mid, a) => { if (a > (next.get(mid) ?? 0)) next.set(mid, a); };
+        for (const [mid, a] of front) for (const e of ent.byMem.get(mid) ?? []) {
+          const wE = a * 0.55 / (1 + Math.log(ent.count.get(e) ?? 1));
+          for (const m2 of ent.byEnt.get(e) ?? []) if (m2 !== mid) put(m2, wE);
+          for (const e2 of ent.rel.get(e) ?? []) for (const m2 of ent.byEnt.get(e2) ?? []) if (m2 !== mid) put(m2, wE * 0.7);
+        }
+        for (const [mid, a] of next) if (a > (act.get(mid) ?? 0)) act.set(mid, a);
+        front = next;
+      }
+      for (const [mid, a] of act) { if (have.has(mid) || a < 0.05) continue; const m = cache.byId.get(mid); if (m) near.push({ m, w: a * 30 + Math.log(1 + m.strength), g: true }); }
       near.sort((a, b) => b.w - a.w);
-      for (const x of near) { if (out.length >= n) break; if (have.has(x.m.id)) continue; have.add(x.m.id); out.push({ ...x.m, hop: true }); }
+      for (const x of near) { if (out.length >= n) break; if (have.has(x.m.id)) continue; have.add(x.m.id); out.push({ ...x.m, hop: true, graph: Boolean(x.g) }); }
       // рабочая память беседы: то, что вспомнилось и запомнилось в этом чате за сутки, всегда под рукой
       if (chatId) { const sess = all.filter((m) => m.chatId === chatId && t - Date.parse(m.createdAt) < day).sort((a, b) => b.id - a.id).slice(0, 4), ids = new Set(sess.map((m) => m.id)); out.splice(0, out.length, ...sess.map((m) => ({ ...m, hop: false, session: true })), ...out.filter((m) => !ids.has(m.id))); out.length = Math.min(out.length, Math.max(n, sess.length)); }
-      for (const m of out) { m.past = isPast(m); m.disputed = dp.has(m.id); }
-      if (out.length) { const stamp = now(); db.run(`UPDATE memories SET used_at = ? WHERE id IN (${out.map(() => "?").join(",")})`, [stamp, ...out.map((m) => m.id)]); for (const m of out) { const c = cache?.byId.get(m.id); if (c) c.usedAt = stamp; } fire(out.filter((m) => !m.session).map((m) => m.id)); save(true); }
+      for (const m of out) { m.past = isPast(m); m.disputed = dp.has(m.id); m.hyp = unconfirmed(m); }
+      if (out.length && !dry) { const stamp = now(); db.run(`UPDATE memories SET used_at = ? WHERE id IN (${out.map(() => "?").join(",")})`, [stamp, ...out.map((m) => m.id)]); for (const m of out) { const c = cache?.byId.get(m.id); if (c) c.usedAt = stamp; } fire(out.filter((m) => !m.session).map((m) => m.id)); save(true); }
       return out.map(({ vec, ...m }) => m);
     },
     /** Забывание по Эббингаузу: эффективная сила = сила × 0.5^(дни без обращения / период). Ниже порога уходит в архив. Закреплённые не трогаем. */
@@ -315,7 +339,8 @@ export async function openDb(root) {
       for (const m of memRows()) {
         if (m.pinned) continue;
         const last = Math.max(Date.parse(m.at) || 0, m.usedAt ? Date.parse(m.usedAt) || 0 : 0);
-        if (m.strength * Math.pow(0.5, (t - last) / day / half) < floor) { db.run("UPDATE memories SET state = 'archived' WHERE id = ?", [m.id]); n++; }
+        const hl = half * (HL[m.mtype] ?? 1) * (unconfirmed(m) ? 0.4 : 1), impF = m.importance ? 0.6 + m.importance / 10 : 1; // неподтверждённые выводы забываются быстрее
+        if (m.strength * impF * Math.pow(0.5, (t - last) / day / hl) < floor) { db.run("UPDATE memories SET state = 'archived' WHERE id = ?", [m.id]); n++; }
       }
       if (n) save(); return n;
     },
@@ -330,7 +355,7 @@ export async function openDb(root) {
     /** Старые похожие воспоминания одной темы (≥4) — кандидаты на сжатие в одно обобщённое. */
     compressClusters: () => {
       const day = 86400000, t = Date.now(), by = new Map();
-      for (const m of memRows()) { if (m.pinned) continue; const last = Math.max(Date.parse(m.at) || 0, m.usedAt ? Date.parse(m.usedAt) || 0 : 0); if ((t - last) / day < 21) continue; const k = m.topics[0]; by.set(k, [...(by.get(k) ?? []), m]); }
+      for (const m of memRows()) { if (m.pinned || unconfirmed(m)) continue; const last = Math.max(Date.parse(m.at) || 0, m.usedAt ? Date.parse(m.usedAt) || 0 : 0); if ((t - last) / day < 21) continue; const k = m.topics[0]; by.set(k, [...(by.get(k) ?? []), m]); }
       return [...by].filter(([, g]) => g.length >= 4).sort((a, b) => b[1].length - a[1].length).slice(0, 3).map(([topic, g]) => ({ topic, items: g.slice(0, 8).map((m) => ({ id: m.id, text: m.text })) }));
     },
     /** Сжатие: создаётся одно обобщённое воспоминание, исходные уходят в историю со ссылкой на него. */
@@ -338,7 +363,7 @@ export async function openDb(root) {
       const src = memRows().filter((m) => ids.includes(m.id) && !m.pinned); text = String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
       if (src.length < 2 || text.length < 6) return null;
       const topics = cleanTopics([topic, ...src.flatMap((m) => m.topics)]), strength = Math.min(20, Math.max(...src.map((m) => m.strength)) + 1);
-      db.run("INSERT INTO memories(text, topics, kind, strength, chat_id, created_at, updated_at, used_at) VALUES (?, ?, 'fact', ?, NULL, ?, ?, ?)", [text, topics.join(","), strength, now(), now(), now()]);
+      db.run("INSERT INTO memories(text, topics, kind, strength, chat_id, created_at, updated_at, used_at, learned_at, src) VALUES (?, ?, 'fact', ?, NULL, ?, ?, ?, ?, 'sleep')", [text, topics.join(","), strength, now(), now(), now(), now()]);
       const nid = rows("SELECT last_insert_rowid() AS id")[0].id;
       for (const m of src) db.run("UPDATE memories SET state = 'replaced', replaced_by = ? WHERE id = ?", [nid, m.id]);
       save(); return { ok: true, id: nid, replaced: src.length };
@@ -385,7 +410,7 @@ export async function openDb(root) {
         db.run("DELETE FROM memories"); db.run("DELETE FROM topic_summaries"); db.run("DELETE FROM entities"); db.run("DELETE FROM messages"); db.run("DELETE FROM chats");
         for (const c of d.chats) db.run("INSERT INTO chats(id, title, created_at) VALUES (?, ?, ?)", [Number(c.id), S(c.title, 80) || "Чат", S(c.createdAt, 40) || now()]);
         let nm = 0; for (const m of d.messages) { if (!ids.has(Number(m?.chatId)) || (m.role !== "user" && m.role !== "assistant")) continue; db.run("INSERT INTO messages(id, chat_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)", [Number(m.id), Number(m.chatId), m.role, S(m.content, 200000), S(m.createdAt, 40) || now()]); nm++; }
-        let nmem = 0; for (const m of d.memories) { const text = S(m?.text, 200).trim(), topics = cleanTopics(Array.isArray(m?.topics) ? m.topics : String(m?.topics ?? "").split(",")); if (text.length < 3 || !topics.length) continue; db.run("INSERT INTO memories(id, text, topics, kind, strength, chat_id, created_at, updated_at, pinned, state, replaced_by, used_at, valid_from, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [Number(m.id), text, topics.join(","), m.kind === "note" ? "note" : "fact", Math.min(20, Math.max(1, Number(m.strength) || 1)), ids.has(Number(m.chatId)) ? Number(m.chatId) : null, S(m.createdAt, 40) || now(), S(m.updatedAt ?? m.at, 40) || now(), m.pinned ? 1 : 0, m.state === "archived" || m.state === "replaced" ? m.state : null, Number.isInteger(m.replacedBy) ? m.replacedBy : null, S(m.usedAt, 40) || null, vdate(m.validFrom), vdate(m.validTo)]); if (Array.isArray(m.entities) || Array.isArray(m.rels)) { linkEntities(Number(m.id), m.entities, null); for (const r of (Array.isArray(m.rels) ? m.rels : []).slice(0, 5)) linkEntities(Number(m.id), [], r); } nmem++; }
+        let nmem = 0; for (const m of d.memories) { const text = S(m?.text, 200).trim(), topics = cleanTopics(Array.isArray(m?.topics) ? m.topics : String(m?.topics ?? "").split(",")); if (text.length < 3 || !topics.length) continue; db.run("INSERT INTO memories(id, text, topics, kind, strength, chat_id, created_at, updated_at, pinned, state, replaced_by, used_at, valid_from, valid_to, learned_at, src, importance, mtype) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [Number(m.id), text, topics.join(","), m.kind === "note" ? "note" : "fact", Math.min(20, Math.max(1, Number(m.strength) || 1)), ids.has(Number(m.chatId)) ? Number(m.chatId) : null, S(m.createdAt, 40) || now(), S(m.updatedAt ?? m.at, 40) || now(), m.pinned ? 1 : 0, m.state === "archived" || m.state === "replaced" ? m.state : null, Number.isInteger(m.replacedBy) ? m.replacedBy : null, S(m.usedAt, 40) || null, vdate(m.validFrom), vdate(m.validTo), S(m.learnedAt, 40) || S(m.createdAt, 40) || now(), ["user", "reflect", "tool", "sleep", "chat"].includes(m.src) ? m.src : null, impOf(m.importance), MTYPES.has(m.mtype) ? m.mtype : null]); if (Array.isArray(m.entities) || Array.isArray(m.rels)) { linkEntities(Number(m.id), m.entities, null); for (const r of (Array.isArray(m.rels) ? m.rels : []).slice(0, 5)) linkEntities(Number(m.id), [], r); } nmem++; }
         db.run("COMMIT"); save(); vecs.clear(); vecsLoaded = false; semCache = { key: "", pairs: [] };
         return { ok: true, chats: d.chats.length, messages: nm, memories: nmem };
       } catch (e) { try { db.run("ROLLBACK"); } catch { /* уже откачено */ } return { error: "Копию не удалось загрузить: " + (e?.message ?? "ошибка") }; }
@@ -410,11 +435,11 @@ export async function openDb(root) {
     /** Крупнейшие темы со сводками: всегда в контексте модели, чтобы она знала общую картину, даже если вспомнить дословно нечего. */
     topicDigest: (limit = 6) => { const c = new Map(); for (const m of memRows()) c.set(m.topics[0], (c.get(m.topics[0]) ?? 0) + 1); return rows("SELECT topic, text FROM topic_summaries").filter((r) => c.has(r.topic)).sort((a, b) => c.get(b.topic) - c.get(a.topic)).slice(0, limit).map((r) => ({ topic: r.topic, text: r.text, count: c.get(r.topic) })); },
     /** «Верно»: воспоминание помогло, укрепляем. */
-    confirmMemory: (id) => { const m = memRows().find((x) => x.id === id); if (!m) return null; db.run("UPDATE memories SET strength = ?, updated_at = ?, used_at = ? WHERE id = ?", [Math.min(20, m.strength + 1), now(), now(), id]); save(); return { ok: true }; },
+    confirmMemory: (id) => { const m = memRows().find((x) => x.id === id); if (!m) return null; db.run("UPDATE memories SET strength = ?, updated_at = ?, used_at = ?, src = 'user' WHERE id = ?", [Math.min(20, m.strength + 1), now(), now(), id]); save(); return { ok: true }; },
     /** «Неверно, вот как правильно»: новая запись вместо старой, старая остаётся в истории. */
     correctMemory: (id, text) => {
       const m = memRows().find((x) => x.id === id); text = String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 200); if (!m || text.length < 6) return null;
-      db.run("INSERT INTO memories(text, topics, kind, strength, chat_id, created_at, updated_at, used_at, pinned, valid_from) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [text, m.topics.join(","), m.kind, m.strength, m.chatId ?? null, now(), now(), now(), m.pinned ? 1 : 0, null]);
+      db.run("INSERT INTO memories(text, topics, kind, strength, chat_id, created_at, updated_at, used_at, pinned, valid_from, learned_at, src, importance, mtype) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?, ?)", [text, m.topics.join(","), m.kind, m.strength, m.chatId ?? null, now(), now(), now(), m.pinned ? 1 : 0, null, now(), m.importance ?? null, m.mtype ?? null]);
       const nid = rows("SELECT last_insert_rowid() AS id")[0].id;
       db.run("INSERT OR IGNORE INTO mem_entities(memory_id, entity_id) SELECT ?, entity_id FROM mem_entities WHERE memory_id = ?", [nid, id]);
       db.run("UPDATE memories SET state = 'replaced', replaced_by = ? WHERE id = ?", [nid, id]); save(); return { ok: true, id: nid };
@@ -457,6 +482,46 @@ export async function openDb(root) {
       return { merged, disputed };
     },
     /** Скопления по смыслу: k-средних по векторам (центры считаем по выборке, потом раскладываем все), независимо от тем, которые дала модель. */
+    /** Срез на дату: что я уже знала в тот день и что тогда ещё было верно (двойное время: «когда верно» и «когда узнала»). */
+    asOf: (date, q = "", limit = 60) => {
+      const d = vdate(date); if (!d) return null;
+      const end = Date.parse(d.length === 10 ? d + "T23:59:59.999Z" : d.slice(0, 7) + "-28T23:59:59.999Z"), all = memRows(true), byId = new Map(all.map((m) => [m.id, m])), qw = wordsOf(q);
+      const learned = (m) => Date.parse(m.learnedAt ?? m.createdAt) || 0, day = (x) => (x.length === 7 ? x + "-28" : x);
+      const out = all.filter((m) => {
+        if (learned(m) > end || (m.state === "archived")) return false;
+        if (m.validFrom && Date.parse(day(m.validFrom)) > end) return false;
+        if (m.validTo && Date.parse(day(m.validTo) + "T23:59:59.999Z") < end) return false;
+        if (m.state === "replaced") { const nx = byId.get(m.replacedBy); if (!nx || learned(nx) <= learned(m) || learned(nx) <= end) return false; } // заменённый факт был «живым» до появления замены
+        return !qw.size || [...qw].some((w) => meta(m).w.has(w) || m.topics.some((t) => t.startsWith(w.slice(0, 4))));
+      }).sort((a, b) => b.strength - a.strength || learned(b) - learned(a));
+      return { date: d, total: out.length, items: out.slice(0, limit).map((m) => ({ id: m.id, text: m.text, topics: m.topics, learnedAt: m.learnedAt ?? m.createdAt, validFrom: m.validFrom, validTo: m.validTo, replaced: m.state === "replaced" })) };
+    },
+    /** Выводы модели и записи «по инструменту», ждущие подтверждения. */
+    hypotheses: () => memRows().filter(unconfirmed).sort((a, b) => b.id - a.id).map((m) => ({ id: m.id, text: m.text, topics: m.topics, src: m.src, at: m.at })),
+    /** Что обобщить: темы, в которых набралось 5+ подтверждённых фактов, а вывода по ним ещё не было (или тема заметно выросла). */
+    reflectTargets: (limit = 2) => {
+      const done = (() => { try { return JSON.parse(rows("SELECT value FROM meta WHERE key = 'reflected'")[0]?.value ?? "{}"); } catch { return {}; } })(), by = new Map();
+      if (memRows().filter((m) => m.src === "reflect").length >= 10) return [];
+      for (const m of memRows()) { if (unconfirmed(m) || m.mtype === "event") continue; const k = m.topics[0]; by.set(k, [...(by.get(k) ?? []), m]); }
+      return [...by].filter(([t, g]) => g.length >= 5 && g.length >= (done[t] ?? 0) + 4).sort((a, b) => b[1].length - a[1].length).slice(0, limit).map(([topic, g]) => ({ topic, n: g.length, items: g.sort((a, b) => b.strength - a.strength).slice(0, 10).map((m) => ({ id: m.id, text: m.text })) }));
+    },
+    markReflected: (topic, n) => { let d = {}; try { d = JSON.parse(rows("SELECT value FROM meta WHERE key = 'reflected'")[0]?.value ?? "{}"); } catch { /* пусто */ } d[topic] = n; db.run("INSERT INTO meta(key, value) VALUES ('reflected', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [JSON.stringify(d)]); store.save(); },
+    /** Самопроверка: закрытые («было раньше») факты не должны вытеснять актуальные и не должны подаваться без пометки. */
+    selfTest(limit = 40) {
+      const all = memRows(true), byId = new Map(all.map((m) => [m.id, m])), t = Date.now(), pairs = [];
+      for (const m of all) {
+        if (m.state === "replaced" && byId.get(m.replacedBy)?.state == null && !byId.get(m.replacedBy)?.validTo) pairs.push({ old: m, cur: byId.get(m.replacedBy) });
+        else if (m.state == null && m.validTo && Date.parse(m.validTo) < t) { const w = meta(m).w, cur = all.filter((o) => o.state == null && !o.validTo && o.id !== m.id && o.topics[0] === m.topics[0]).map((o) => [jaccard(w, meta(o).w), o]).sort((a, b) => b[0] - a[0])[0]; if (cur && cur[0] >= 0.25) pairs.push({ old: m, cur: cur[1] }); }
+      }
+      const bad = []; let checked = 0;
+      for (const { old, cur } of pairs.slice(0, limit)) {
+        checked++; const res = this.recall(cur.text, 8, null, null, { dry: true }), io = res.findIndex((x) => x.id === old.id), ic = res.findIndex((x) => x.id === cur.id);
+        if (io >= 0 && (!res[io].past || (ic >= 0 && io < ic) || ic < 0)) bad.push({ old: old.text, now: cur.text });
+      }
+      return { checked, ok: checked - bad.length, bad: bad.slice(0, 5) };
+    },
+    /** Убрать в архив по просьбе модели (обратимо, закреплённые не трогаем). */
+    archiveMemory: (id) => { const m = memRows().find((x) => x.id === id); if (!m || m.pinned) return false; db.run("UPDATE memories SET state = 'archived' WHERE id = ?", [id]); save(); return true; },
     clusters: ({ k } = {}) => {
       memRows(); if (cache.cl) return cache.cl;
       const vs = cache.rows.filter((m) => m.vec); const res = { items: [], withVec: vs.length, total: cache.rows.length };
