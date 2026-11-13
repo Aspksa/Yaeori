@@ -1,5 +1,5 @@
 import { createChat, deleteChat, getGraph, getMessages, listChats, sendMessage, type ChatInfo, type Msg } from "./api";
-import { mountGraph, type GraphHandle, type Layout } from "./graph";
+import { DEFAULT_MAP, MAP_THEMES, mountGraph, type GraphHandle, type Layout, type MapOptions, type MapTheme } from "./graph";
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 /** Минимальная разметка: блоки кода, `код`, **жирный**, переносы строк. Всё остальное экранируется. */
@@ -11,16 +11,42 @@ export function renderText(src: string): string {
   }).join("");
 }
 
-const LAST = "yaeori:chat:v1";
+const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v1";
+const LAYOUTS: [Layout, string][] = [["rings", "Кольца"], ["circle", "Круг"], ["hex", "Соты"], ["force", "Сила"]];
+const num = (v: unknown, lo: number, hi: number, d: number) => (typeof v === "number" && v >= lo && v <= hi ? v : d);
+function loadMap(): MapOptions {
+  try {
+    const r = JSON.parse(localStorage.getItem(MAP_KEY) ?? "null") as Partial<MapOptions> | null;
+    return {
+      layout: LAYOUTS.some(([l]) => l === r?.layout) ? r!.layout! : DEFAULT_MAP.layout,
+      theme: MAP_THEMES.some((t) => t.id === r?.theme) ? r!.theme! : DEFAULT_MAP.theme,
+      rotation: num(r?.rotation, 0, 1, DEFAULT_MAP.rotation), force: num(r?.force, 0, 1, DEFAULT_MAP.force), size: num(r?.size, 0.5, 2, DEFAULT_MAP.size),
+      labels: r?.labels === true, collapsed: Array.isArray(r?.collapsed) ? r!.collapsed.filter((x): x is number => Number.isInteger(x)).slice(0, 50) : [],
+    };
+  } catch { return { ...DEFAULT_MAP }; }
+}
+const saveMap = (o: MapOptions) => { try { localStorage.setItem(MAP_KEY, JSON.stringify(o)); } catch { /* хранилище недоступно */ } };
 let draft = "";
 
 export const homeView = () => `<div class="home">
   <section class="card viz" aria-label="Карта беседы">
     <div class="viz-head"><div class="grow"><strong>Карта беседы</strong><small class="muted" id="viz-stats"></small></div>
-      <div class="segmented" role="radiogroup" aria-label="Раскладка"><button type="button" role="radio" aria-checked="true" data-layout="rings">Кольца</button><button type="button" role="radio" aria-checked="false" data-layout="star">Звезда</button></div></div>
-    <div class="viz-body"><canvas id="graph" role="img" aria-label="Карта сообщений: кольца или лучи из сообщений по чатам"></canvas><div id="graph-tip" class="graph-tip" hidden></div>
+      <button class="btn small" id="viz-toggle" type="button" aria-expanded="false" aria-controls="viz-panel">Настройки карты</button></div>
+    <div class="viz-body"><canvas id="graph" role="img" aria-label="Карта сообщений: чаты и сообщения, раскладки кольца, круг, соты и сила"></canvas><div id="graph-tip" class="graph-tip" hidden></div>
       <p class="viz-empty muted" id="viz-empty" hidden>Напишите первое сообщение, и здесь начнёт расти карта беседы.</p>
-      <div class="viz-legend muted"><i class="dot you"></i> Вы <i class="dot bot"></i> Yaeori</div></div>
+      <div class="viz-legend muted"><i class="dot you"></i> Вы <i class="dot bot"></i> Yaeori <span class="viz-hint">· колесо — масштаб, перетаскивание — сдвиг, двойной щелчок по чату — свернуть</span></div>
+      <aside class="viz-panel" id="viz-panel" hidden aria-label="Настройки карты">
+        <input id="viz-search" type="search" placeholder="Найти на карте…" autocomplete="off" spellcheck="false" aria-label="Поиск по карте" />
+        <h3>Раскладка</h3><div class="viz-grid" role="radiogroup" aria-label="Раскладка">${LAYOUTS.map(([id, t]) => `<button type="button" role="radio" aria-checked="false" data-layout="${id}">${t}</button>`).join("")}</div>
+        <h3>Вид</h3>
+        <label class="viz-range"><span>Вращение</span><output id="o-rotation"></output><input type="range" min="0" max="1" step="0.05" data-opt="rotation" /></label>
+        <label class="viz-range"><span>Сила связей</span><output id="o-force"></output><input type="range" min="0" max="1" step="0.05" data-opt="force" /></label>
+        <label class="viz-range"><span>Размер узлов</span><output id="o-size"></output><input type="range" min="0.5" max="2" step="0.1" data-opt="size" /></label>
+        <label class="viz-check"><input type="checkbox" data-opt="labels" /> Подписи сообщений (при приближении)</label>
+        <div class="viz-row"><button class="btn small" type="button" data-act="expand">Развернуть всё</button><button class="btn small" type="button" data-act="collapse">Свернуть всё</button><button class="btn small" type="button" data-act="center">Центрировать</button></div>
+        <h3>Тема карты</h3><div class="viz-themes" role="radiogroup" aria-label="Тема карты">${MAP_THEMES.map((t) => `<button type="button" role="radio" aria-checked="false" data-maptheme="${t.id}"><span class="sw">${t.swatch.map((c) => `<i style="background:${c}"></i>`).join("")}</span>${t.label}</button>`).join("")}</div>
+        <div class="viz-row"><button class="btn small primary" type="button" data-act="png">Скачать PNG</button><button class="btn small" type="button" data-act="reset-map">По умолчанию</button></div>
+      </aside></div>
   </section>
   <section class="card chat" aria-label="Чат">
     <div class="chat-head"><select id="chat-select" aria-label="Чат"></select><button class="btn small" id="chat-new" type="button">Новый</button><button class="btn small danger" id="chat-del" type="button" aria-label="Удалить чат">Удалить</button></div>
@@ -35,7 +61,35 @@ export function mountHome(): () => void {
   const select = $<HTMLSelectElement>("chat-select"), thread = $("thread"), input = $<HTMLTextAreaElement>("chat-input"), sendBtn = $<HTMLButtonElement>("chat-send");
   const form = $<HTMLFormElement>("chat-form"), stats = $("viz-stats"), empty = $("viz-empty");
   let chats: ChatInfo[] = [], current = 0, busy = false, ctrl: AbortController | null = null, dead = false;
-  const graph: GraphHandle = mountGraph($<HTMLCanvasElement>("graph"), $("graph-tip"), { onPick: (id) => void open(id) });
+  let map = loadMap();
+  const graph: GraphHandle = mountGraph($<HTMLCanvasElement>("graph"), $("graph-tip"), { onPick: (id) => void open(id), onCollapse: (ids) => { map = { ...map, collapsed: ids }; saveMap(map); } }, map);
+  const panel = $("viz-panel");
+  const syncPanel = () => {
+    document.querySelectorAll<HTMLElement>("[data-layout]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.layout === map.layout)));
+    document.querySelectorAll<HTMLElement>("[data-maptheme]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.maptheme === map.theme)));
+    for (const k of ["rotation", "force", "size"] as const) { (panel.querySelector(`[data-opt="${k}"]`) as HTMLInputElement).value = String(map[k]); $("o-" + k).textContent = k === "size" ? map[k].toFixed(1) : map[k].toFixed(2); }
+    (panel.querySelector('[data-opt="labels"]') as HTMLInputElement).checked = map.labels;
+  };
+  const apply = (p: Partial<MapOptions>) => { map = { ...map, ...p }; graph.setOptions(p); saveMap(map); syncPanel(); };
+  syncPanel();
+  $("viz-toggle").addEventListener("click", (e) => { const t = e.currentTarget as HTMLElement; panel.hidden = !panel.hidden; t.setAttribute("aria-expanded", String(!panel.hidden)); });
+  $<HTMLInputElement>("viz-search").addEventListener("input", (e) => graph.search((e.target as HTMLInputElement).value));
+  panel.addEventListener("input", (e) => {
+    const t = e.target as HTMLInputElement, k = t.dataset.opt as keyof MapOptions | undefined; if (!k) return;
+    if (k === "labels") apply({ labels: t.checked }); else apply({ [k]: Number(t.value) } as Partial<MapOptions>);
+  });
+  panel.addEventListener("click", async (e) => {
+    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-layout],[data-maptheme],[data-act]"); if (!t) return;
+    if (t.dataset.layout) apply({ layout: t.dataset.layout as Layout });
+    else if (t.dataset.maptheme) apply({ theme: t.dataset.maptheme as MapTheme });
+    else switch (t.dataset.act) {
+      case "expand": graph.expandAll(); map = graph.options(); saveMap(map); break;
+      case "collapse": graph.collapseAll(); map = graph.options(); saveMap(map); break;
+      case "center": graph.recenter(); break;
+      case "reset-map": apply({ ...DEFAULT_MAP }); graph.recenter(); break;
+      case "png": { const b = await graph.png(); if (b) { const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "yaeori-karta.png"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); } break; }
+    }
+  });
 
   const bubble = (role: "user" | "assistant" | "error", html: string) => {
     const d = document.createElement("div"); d.className = "msg " + role; d.innerHTML = html; thread.appendChild(d);
@@ -108,11 +162,6 @@ export function mountHome(): () => void {
     await deleteChat(current); current = 0; try { localStorage.removeItem(LAST); } catch { /* ignore */ }
     await refreshChats(); hello(); await refreshGraph();
   });
-  document.querySelectorAll<HTMLElement>("[data-layout]").forEach((b) => b.addEventListener("click", () => {
-    graph.setLayout(b.dataset.layout as Layout);
-    document.querySelectorAll<HTMLElement>("[data-layout]").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
-  }));
-
   hello();
   void (async () => {
     try {
