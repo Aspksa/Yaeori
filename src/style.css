@@ -191,12 +191,8 @@ button.pill{border:0;font:inherit;font-size:var(--fs-sm);font-weight:600;cursor:
 .mdl-row{display:flex;width:100%;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:0;border-radius:var(--r-sm);background:none;font:inherit;font-family:ui-monospace,Consolas,monospace;font-size:var(--fs-sm);text-align:left;cursor:pointer;overflow-wrap:anywhere}
 .mdl-row:hover{background:var(--hover)}.mdl-row i{visibility:hidden;font-style:normal;color:var(--brand)}.mdl-row.is-main{background:color-mix(in srgb,var(--brand) 12%,transparent);font-weight:600}.mdl-row.is-main i{visibility:visible}
 
-.viz-tabs{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:999px;background:var(--surface)}
-.viz-tabs button{padding:4px 12px;border:0;border-radius:999px;background:none;font:inherit;font-weight:600;font-size:var(--fs-sm);cursor:pointer;color:var(--muted)}
-.viz-tabs button[aria-checked=true]{background:var(--brand);color:var(--brand-fg)}
-.viz-time{position:absolute;left:12px;right:12px;bottom:34px;display:flex;align-items:center;gap:10px;padding:6px 10px;border:1px solid var(--line);border-radius:999px;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(6px)}
-.viz-time[hidden]{display:none}.viz-time input{flex:1;min-width:0;accent-color:var(--brand)}.viz-time output{min-width:64px;text-align:right;font-size:var(--fs-sm);color:var(--muted);font-family:ui-monospace,Consolas,monospace}
 .viz-empty{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}.viz-empty p{margin:0}
 .dot.long{background:var(--brand);box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 30%,transparent)}.dot.fade{background:var(--muted);opacity:.5}
 .viz-empty{top:38%;bottom:auto}.viz-empty[hidden]{display:none}
 .mem-item{display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line)}.mem-item>div{flex:1;min-width:0}.mem-item small{display:block;color:var(--muted)}.mem-list{max-height:320px;overflow:auto;margin:8px 0}
+.dot.sq{border-radius:2px}
