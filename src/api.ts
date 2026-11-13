@@ -46,7 +46,11 @@ export interface Review { merges: { keep: number; items: { id: number; text: str
 export const reviewMemories = () => call<Review>("/api/memories/review", { method: "POST", body: "{}" });
 export const mergeMemories = (keep: number, drop: number[], history = false) => call<{ ok?: boolean; error?: string }>("/api/memories/merge", { method: "POST", body: JSON.stringify({ keep, drop, history }) });
 export interface Inactive { id: number; text: string; state: "archived" | "replaced"; topics: string[]; at: string; replacedBy: number | null; replacedText: string | null }
-export interface Entity { id: number; name: string; memories: number[]; relations: { s: string; r: string; o: string; past: boolean }[] }
+export interface Entity { id: number; name: string; type?: string | null; typeLabel?: string | null; parent?: string | null; aliases?: string[]; memories: number[]; relations: { s: string; r: string; o: string; past: boolean }[] }
+export interface UnitInfo { id: number; name: string; type: string | null; typeLabel: string | null; path: { id: number; name: string }[]; children: { id: number; name: string; type: string | null; typeLabel: string | null; n: number }[]; events: { id: number; text: string; when: string; past: boolean; dueAt: string | null; conf: number }[]; total: number; next: { id: number; text: string; due: string } | null }
+export const getUnit = (id: number) => call<UnitInfo>("/api/units/" + id);
+export const addAlias = (id: number, alias: string) => call<{ ok?: boolean; linked?: number; error?: string }>("/api/entities/" + id + "/alias", { method: "POST", body: JSON.stringify({ alias }) });
+export const removeAlias = (id: number, alias: string) => call<{ ok: boolean }>("/api/entities/" + id + "/alias", { method: "DELETE", body: JSON.stringify({ alias }) });
 export const getEntities = () => call<{ items: Entity[] }>("/api/entities");
 export const getInactive = () => call<{ items: Inactive[] }>("/api/memories/inactive");
 export const restoreMemory = (id: number) => call<{ ok?: boolean; error?: string }>(`/api/memories/${id}/restore`, { method: "POST", body: "{}" });
