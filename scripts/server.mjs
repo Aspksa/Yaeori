@@ -226,6 +226,12 @@ export function createApp({ root, db, dist = null }) {
       const s = read(); if (!s.key) return json(res, 200, { ok: false, ...other("NO_KEY") }); if (!s.model) return json(res, 200, { ok: false, ...other("NO_MODEL") });
       try { return json(res, 200, { ok: true, ...(await scanOld(s)) }); } catch (e) { return json(res, 200, { ok: false, ...(e?.explained ?? explainNet(e)) }); }
     }
+    if (pathname === "/api/export" && req.method === "GET") return json(res, 200, db.exportAll());
+    if (pathname === "/api/import" && req.method === "POST") {
+      let b; try { b = await body(req, 80 * 1024 * 1024); } catch { return json(res, 400, { error: "Файл слишком большой или повреждён" }); }
+      const r = db.importAll(b); if (r.error) return json(res, 400, r);
+      setTimeout(() => void tick(), 500); return json(res, 200, r);
+    }
     const mp = /^\/api\/memories\/(\d+)$/.exec(pathname);
     if (mp && req.method === "PUT") {
       let b; try { b = await body(req); } catch { return json(res, 400, { error: "Некорректный запрос" }); }

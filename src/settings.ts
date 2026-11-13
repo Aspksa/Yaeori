@@ -1,5 +1,5 @@
 import { ACCENTS, swatchColor, type AccentId, type Theme } from "./accents";
-import { checkConn, forgetAll, forgetMemory, getConn, getGuide, getMemories, saveConn, scanMemories, testModel, type Conn, type Explained, type Guide, type MemoryList, type TestResult } from "./api";
+import { exportAll, importAll, checkConn, forgetAll, forgetMemory, getConn, getGuide, getMemories, saveConn, scanMemories, testModel, type Conn, type Explained, type Guide, type MemoryList, type TestResult } from "./api";
 import { DEFAULT_PREFS, clean, type Density, type Prefs, type Radius, type TextSize } from "./prefs";
 import pkg from "../package.json";
 
@@ -107,7 +107,9 @@ function lookBody(p: Prefs) {
       <label class="swatch-custom" role="radio" aria-checked="${p.accent === "custom"}" title="Свой цвет"><input type="color" aria-label="Свой цвет" value="${p.custom}" data-custom /></label></div></div>
     ${seg("textSize", "Размер текста", SIZES, p.textSize)}${seg("density", "Плотность", DENS, p.density)}${seg("radius", "Скругления", RADII, p.radius)}`;
 }
-const dataBody = () => `<div class="row"><button class="btn" data-act="export">Сохранить настройки в файл</button><button class="btn" data-act="import">Загрузить из файла</button>
+const dataBody = () => `<div class="set-row"><strong>Резервная копия</strong><p class="muted">Все беседы, память (с закреплениями) и внешний вид в одном файле. Ключ Cloud.ru в файл не попадает. Можно перенести на другой компьютер.</p>
+  <div class="row"><button class="btn primary" data-act="backup"${busy ? " disabled" : ""}>Сохранить копию</button><button class="btn" data-act="restore"${busy ? " disabled" : ""}>Загрузить копию</button><input type="file" accept="application/json,.json" hidden id="set-restore" /></div></div>
+  <div class="set-row"><strong>Только внешний вид</strong></div><div class="row"><button class="btn" data-act="export">Сохранить настройки в файл</button><button class="btn" data-act="import">Загрузить из файла</button>
   <input type="file" accept="application/json,.json" hidden id="set-import" /></div>
   <p class="muted">Файл содержит только внешний вид. Ключ Cloud.ru в него не попадает.</p>
   <div class="row"><button class="btn danger" data-act="reset-all">Сбросить внешний вид</button></div>`;
@@ -165,6 +167,18 @@ export function bindSettings(ctx: Ctx) {
     if (t.id === "set-model" || t.id === "set-fb") { // сохраняется сразу, без отдельной кнопки
       saveConn(t.id === "set-model" ? { model: t.value } : { fallbackModel: t.value }).then((c) => { conn = c; drafts.delete("set-model"); status = ""; }, (e: Error) => { status = e.message; }).finally(refreshModels);
     }
+    if (t.id === "set-restore" && t.files?.[0]) {
+      const f = t.files[0]; t.value = "";
+      void run(ctx, async () => {
+        let d: Record<string, unknown>; try { d = JSON.parse(await f.text()); } catch { return "Файл не подошёл: это не копия Yaeori"; }
+        if (d.app !== "yaeori") return "Файл не подошёл: это не копия Yaeori";
+        if (!confirm(`Заменить все беседы и память данными из файла?\nВ файле: бесед ${(d.chats as unknown[])?.length ?? 0}, воспоминаний ${(d.memories as unknown[])?.length ?? 0}. Текущие будут стёрты. Сначала лучше сохранить копию.`)) return "Загрузка отменена";
+        const r = await importAll(d); if (r.error) return r.error;
+        if (d.prefs) ctx.set(clean(d.prefs));
+        mem = null; loadMem(ctx);
+        return `Готово: бесед ${r.chats}, сообщений ${r.messages}, воспоминаний ${r.memories}`;
+      });
+    }
     if (t.id === "set-import" && t.files?.[0]) {
       t.files[0].text().then((txt) => { ctx.set(clean(JSON.parse(txt))); status = "Настройки загружены"; ctx.rerender(); }, () => { status = "Файл не подошёл"; ctx.rerender(); });
     }
@@ -216,6 +230,8 @@ export function bindSettings(ctx: Ctx) {
       case "refresh-models": void loadModels(ctx, false); break;
       case "test": { const m = t.dataset.m!; tests[m] = "wait"; refreshModels(); testModel(m).then((r) => { tests[m] = r; }, (e: Error) => { tests[m] = { ok: false, error: e.message }; }).finally(refreshModels); break; }
       case "toggle-all": ctx.set({ collapsed: p.collapsed.length >= SECTIONS.length ? [] : SECTIONS.map((s) => s.id) }); ctx.rerender(); break;
+      case "backup": void run(ctx, async () => { const d = await exportAll(); download(`yaeori-backup-${new Date().toISOString().slice(0, 10)}.json`, { ...d, prefs: { ...p, collapsed: [] } }); return "Копия сохранена в загрузки"; }); break;
+      case "restore": document.getElementById("set-restore")?.click(); break;
       case "export": download("yaeori-settings.json", { ...p, collapsed: [] }); break;
       case "import": document.getElementById("set-import")?.click(); break;
       case "reset-all": if (confirm("Вернуть внешний вид к исходному?")) { ctx.set({ ...DEFAULT_PREFS, collapsed: p.collapsed }); status = ""; ctx.rerender(); } break;

@@ -40,6 +40,8 @@ export const getMemories = () => call<MemoryList>("/api/memories");
 export const forgetMemory = (id: number) => call<{ ok: true }>(`/api/memories/${id}`, { method: "DELETE" });
 export const forgetAll = () => call<{ ok: true }>("/api/memories", { method: "DELETE" });
 export const updateMemory = (id: number, patch: { text?: string; topics?: string[] | string; pinned?: boolean }) => call<{ ok?: boolean; error?: string }>(`/api/memories/${id}`, { method: "PUT", body: JSON.stringify(patch) });
+export const exportAll = () => call<Record<string, unknown>>("/api/export");
+export const importAll = (data: unknown) => call<{ ok?: boolean; chats?: number; messages?: number; memories?: number; error?: string }>("/api/import", { method: "POST", body: JSON.stringify(data) });
 export interface VecInfo { total: number; indexed: number; model: string; ok: boolean | null; error: string; done?: number }
 export const getVectors = () => call<VecInfo>("/api/vectors");
 export const buildVectors = () => call<VecInfo & Explained>("/api/vectors/build", { method: "POST", body: "{}" });

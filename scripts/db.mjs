@@ -136,6 +136,28 @@ export async function openDb(root) {
       if (text !== cur.text) db.run("UPDATE memories SET vec = NULL WHERE id = ?", [id]);
       save(); return { ok: true };
     },
+    /** Полная копия: беседы, сообщения, память. Векторы не входят: они досчитаются сами. Ключ Cloud.ru не входит. */
+    exportAll: () => ({
+      app: "yaeori", version: 1, exportedAt: now(),
+      chats: rows("SELECT id, title, created_at AS createdAt FROM chats ORDER BY id"),
+      messages: rows("SELECT id, chat_id AS chatId, role, content, created_at AS createdAt FROM messages ORDER BY id"),
+      memories: memRows().map(({ vec, chatTitle, ...m }) => m).sort((a, b) => a.id - b.id),
+    }),
+    /** Заменяет всё содержимое данными из копии. Всё или ничего: при ошибке остаётся прежнее. */
+    importAll: (d) => {
+      const isArr = (x) => Array.isArray(x) && x.length <= 200000, S = (v, n) => String(v ?? "").slice(0, n);
+      if (!d || d.app !== "yaeori" || !isArr(d.chats) || !isArr(d.messages) || !isArr(d.memories)) return { error: "Это не копия Yaeori" };
+      const ids = new Set(d.chats.map((c) => Number(c?.id)));
+      try {
+        db.run("BEGIN");
+        db.run("DELETE FROM memories"); db.run("DELETE FROM messages"); db.run("DELETE FROM chats");
+        for (const c of d.chats) db.run("INSERT INTO chats(id, title, created_at) VALUES (?, ?, ?)", [Number(c.id), S(c.title, 80) || "Чат", S(c.createdAt, 40) || now()]);
+        let nm = 0; for (const m of d.messages) { if (!ids.has(Number(m?.chatId)) || (m.role !== "user" && m.role !== "assistant")) continue; db.run("INSERT INTO messages(id, chat_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)", [Number(m.id), Number(m.chatId), m.role, S(m.content, 200000), S(m.createdAt, 40) || now()]); nm++; }
+        let nmem = 0; for (const m of d.memories) { const text = S(m?.text, 200).trim(), topics = cleanTopics(Array.isArray(m?.topics) ? m.topics : String(m?.topics ?? "").split(",")); if (text.length < 3 || !topics.length) continue; db.run("INSERT INTO memories(id, text, topics, kind, strength, chat_id, created_at, updated_at, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [Number(m.id), text, topics.join(","), m.kind === "note" ? "note" : "fact", Math.min(20, Math.max(1, Number(m.strength) || 1)), ids.has(Number(m.chatId)) ? Number(m.chatId) : null, S(m.createdAt, 40) || now(), S(m.updatedAt ?? m.at, 40) || now(), m.pinned ? 1 : 0]); nmem++; }
+        db.run("COMMIT"); save(); vecCache.clear(); semCache = { key: "", pairs: [] };
+        return { ok: true, chats: d.chats.length, messages: nm, memories: nmem };
+      } catch (e) { try { db.run("ROLLBACK"); } catch { /* уже откачено */ } return { error: "Копию не удалось загрузить: " + (e?.message ?? "ошибка") }; }
+    },
     deleteMemory: (id) => { db.run("DELETE FROM memories WHERE id = ?", [id]); save(); },
     clearMemories: () => { db.run("DELETE FROM memories"); save(); },
     countMemories: () => rows("SELECT count(*) AS n FROM memories")[0].n,
