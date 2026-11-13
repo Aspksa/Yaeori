@@ -3,6 +3,7 @@
 import path from "node:path";
 import { openStore } from "./sqlstore.mjs";
 import * as equip from "./equip.mjs";
+import * as contracts from "./contracts.mjs";
 
 const STOP = new Set("который которая которое которые также можно очень будет есть этого этой этом чтобы когда если после перед через между потому какой какая какие нужно надо вопрос номер привет здравствуйте сообщений сообщение about which would there their these those other where while using should could себя меня тебя тебе мной свой свои своё всего быть были было была только ещё уже или либо чего этим этих того тому тоже здесь сейчас".split(" "));
 
@@ -18,6 +19,8 @@ export async function openDb(root) {
   try { const cols = store.cols("memories"); if (!cols.includes("vec")) db.run("ALTER TABLE memories ADD COLUMN vec TEXT"); if (!cols.includes("pinned")) db.run("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"); if (!cols.includes("state")) db.run("ALTER TABLE memories ADD COLUMN state TEXT"); if (!cols.includes("replaced_by")) db.run("ALTER TABLE memories ADD COLUMN replaced_by INTEGER"); if (!cols.includes("used_at")) db.run("ALTER TABLE memories ADD COLUMN used_at TEXT"); if (!cols.includes("valid_from")) db.run("ALTER TABLE memories ADD COLUMN valid_from TEXT"); if (!cols.includes("valid_to")) db.run("ALTER TABLE memories ADD COLUMN valid_to TEXT"); } catch { /* уже есть */ }
   try { const cols = store.cols("memories"); for (const [c, t] of [["learned_at", "TEXT"], ["src", "TEXT"], ["importance", "REAL"], ["mtype", "TEXT"]]) if (!cols.includes(c)) db.run(`ALTER TABLE memories ADD COLUMN ${c} ${t}`); db.run("UPDATE memories SET learned_at = created_at WHERE learned_at IS NULL"); } catch { /* уже есть */ }
   try { const cols = store.cols("memories"); for (const [c, t] of [["ev_against", "INTEGER NOT NULL DEFAULT 0"], ["src_msg", "INTEGER"], ["src_quote", "TEXT"], ["proof", "TEXT"], ["due_at", "TEXT"]]) if (!cols.includes(c)) db.run(`ALTER TABLE memories ADD COLUMN ${c} ${t}`); } catch { /* уже есть */ }
+  db.run("CREATE TABLE IF NOT EXISTS contract_facts (memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE, entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, kind TEXT NOT NULL, num REAL, txt TEXT, PRIMARY KEY (memory_id, entity_id, kind))");
+  db.run("CREATE TABLE IF NOT EXISTS entity_pairs (a INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, b INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE, state TEXT NOT NULL DEFAULT 'open', PRIMARY KEY (a, b))");
   db.run("CREATE TABLE IF NOT EXISTS causal (cause INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE, effect INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE, PRIMARY KEY (cause, effect))");
   db.run("CREATE TABLE IF NOT EXISTS vectors (memory_id INTEGER PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE, data BLOB NOT NULL)");
   db.run("CREATE TABLE IF NOT EXISTS chat_summaries (chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE, text TEXT NOT NULL, upto INTEGER NOT NULL, updated_at TEXT NOT NULL)");
@@ -78,10 +81,18 @@ export async function openDb(root) {
   const ekey = (n) => norm(n).slice(0, 40);
   const vdate = (x) => { const m = /^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/.exec(String(x ?? "").trim()); return m ? [m[1], m[2], m[3]].filter(Boolean).join("-") : null; };
   /** Находит или создаёт сущность с типом. Тип и родителя (марка → модель → машина → узел) дописываем, если их ещё не было. */
+  const created = [], NUMBERED = new Set(["contract", "addendum", "act", "invoice", "plate", "inv", "vin"]);
+  /** Новый номер, отличающийся от уже известного одной цифрой, не склеиваем сами, а спрашиваем: это тот же или другой. */
+  const checkConfusable = () => {
+    for (const id of created.splice(0)) {
+      const e = rows("SELECT id, key, etype FROM entities WHERE id = ?", [id])[0]; if (!e || !NUMBERED.has(e.etype) || e.key.length < 5) continue;
+      for (const o of rows("SELECT id, key FROM entities WHERE etype = ? AND id != ?", [e.etype, id])) if (contracts.near1(e.key, o.key)) db.run("INSERT OR IGNORE INTO entity_pairs(a, b, state) VALUES (?, ?, 'open')", [Math.min(id, o.id), Math.max(id, o.id)]);
+    }
+  };
   const mkEnt = (name, etype = null, parent = null) => {
     const nm = String(name).slice(0, 40), key = ekey(nm); if (key.length < 3) return null;
     let r = rows("SELECT id, etype, parent FROM entities WHERE key = ?", [key])[0];
-    if (!r) { db.run("INSERT INTO entities(name, key, etype, parent) VALUES (?, ?, ?, ?)", [nm, key, etype, parent]); return rows("SELECT last_insert_rowid() AS id")[0].id; }
+    if (!r) { db.run("INSERT INTO entities(name, key, etype, parent) VALUES (?, ?, ?, ?)", [nm, key, etype, parent]); const nid = rows("SELECT last_insert_rowid() AS id")[0].id; if (etype) created.push(nid); return nid; }
     if (etype && !r.etype) db.run("UPDATE entities SET etype = ? WHERE id = ?", [etype, r.id]);
     if (parent && !r.parent && parent !== r.id) db.run("UPDATE entities SET parent = ? WHERE id = ?", [parent, r.id]);
     return r.id;
@@ -110,7 +121,39 @@ export async function openDb(root) {
     const machine = units[0] ?? (models.length === 1 ? models[0] : null);
     if (machine) for (const p of items.filter((x) => x.type === "part")) link(mkEnt(`${p.name} (${machine.name})`, "part", ids.get(machine.name)));
     for (const a of rows("SELECT key, entity_id AS id FROM entity_alias WHERE user = 1")) if (norm2.includes(" " + a.key + " ")) link(a.id);
-    if (items.length && cache) cache.ent = null;
+    autoContracts(memId, text);
+    checkConfusable();
+    if (cache) cache.ent = null;
+  };
+  /** Договоры в тексте факта: документы, контрагент, роли, предмет, суммы и сроки. Иерархия: контрагент → договор → допсоглашения, акты, счета. */
+  /** Деньги и срок договора из живых фактов: последняя названная цена, сумма оплат, остаток. */
+  const contractMoney = (id, mems) => {
+    const cf = rows("SELECT memory_id AS mid, kind, num, txt FROM contract_facts WHERE entity_id = ?", [id]).filter((r) => mems.has(r.mid)).sort((a, b) => a.mid - b.mid);
+    const last = (k) => cf.filter((r) => r.kind === k).at(-1), total = last("total")?.num ?? null, paid = cf.filter((r) => r.kind === "paid").reduce((a, r) => a + r.num, 0), rem = last("remain")?.num ?? null;
+    return { total, paid: cf.some((r) => r.kind === "paid") ? paid : null, remain: rem ?? (total != null && cf.some((r) => r.kind === "paid") ? Math.max(0, total - paid) : null), term: last("term")?.txt ?? null };
+  };
+  const autoContracts = (memId, text) => {
+    const c = contracts.detect(text); if (!c.items.length && !c.roles.length) return;
+    const link = (id) => { if (id) db.run("INSERT OR IGNORE INTO mem_entities(memory_id, entity_id) VALUES (?, ?)", [memId, id]); };
+    const mains = c.items.filter((x) => x.type === "contract"), main = mains.length === 1 ? mains[0] : null;
+    const partyIds = new Map(c.parties.map((p) => [p.name, mkEnt(p.name, "party")])); for (const id of partyIds.values()) link(id);
+    const mainId = main ? mkEnt(main.name, "contract") : null; link(mainId);
+    if (mainId && partyIds.size) { const pr = c.roles.find((r) => r.type === "party" && ["поставщик", "подрядчик", "исполнитель", "заказчик", "покупатель"].includes(r.role))?.target ?? c.parties[0].name; db.run("UPDATE entities SET parent = ? WHERE id = ? AND parent IS NULL", [partyIds.get(pr) ?? [...partyIds.values()][0], mainId]); }
+    for (const it of c.items) {
+      if (it.type === "contract") { if (it !== main) { const id = mkEnt(it.name, "contract"); link(id); } continue; }
+      const name = main ? `${it.name} (${main.name})` : it.name; link(mkEnt(name, it.type, mainId));
+    }
+    if (main) {
+      for (const r of c.roles) { if (r.type === "person") mkEnt(r.target, "person"); linkEntities(memId, [], { s: main.name, r: r.role, o: r.target }); }
+      const units = equip.detect(text).filter((x) => equip.isUnit(x.type) || x.type === "model").slice(0, 3); for (const u of units) linkEntities(memId, [], { s: main.name, r: "предмет", o: u.name });
+      const put = (kind, num, txt) => db.run("INSERT OR REPLACE INTO contract_facts(memory_id, entity_id, kind, num, txt) VALUES (?, ?, ?, ?, ?)", [memId, mainId, kind, num, txt]);
+      const total = c.amounts.find((a) => a.kind === "total"), paid = c.amounts.find((a) => a.kind === "paid"), rem = c.amounts.find((a) => a.kind === "remain");
+      if (total) put("total", total.value, null); if (paid) put("paid", paid.value, null); if (rem) put("remain", rem.value, null); if (c.term) put("term", null, c.term);
+      for (const [kind, why] of [["total", "разные суммы по договору"], ["term", "разные сроки договора"]]) {
+        const mine = rows("SELECT num, txt FROM contract_facts WHERE memory_id = ? AND entity_id = ? AND kind = ?", [memId, mainId, kind])[0]; if (!mine) continue;
+        for (const o of rows("SELECT cf.memory_id AS mid, cf.num, cf.txt FROM contract_facts cf JOIN memories m ON m.id = cf.memory_id WHERE cf.entity_id = ? AND cf.kind = ? AND cf.memory_id != ? AND m.state IS NULL", [mainId, kind, memId])) if ((kind === "total" ? o.num !== mine.num : o.txt !== mine.txt)) addDispute(memId, o.mid, why);
+      }
+    }
   };
   const confOf = (m) => (Math.min(20, m.strength ?? 1) + 1) / (Math.min(20, m.strength ?? 1) + (m.against ?? 0) * 1.5 + 2); // достоверность: подтверждения против возражений
   const DOW = { понедельник: 1, вторник: 2, среду: 3, среда: 3, четверг: 4, пятницу: 5, пятница: 5, субботу: 6, суббота: 6, воскресенье: 0 };
@@ -140,7 +183,7 @@ export async function openDb(root) {
   const impOf = (x) => { const n = Number(x); return Number.isFinite(n) && n >= 1 ? Math.min(10, Math.round(n)) : null; };
   const unconfirmed = (m) => (m.src === "reflect" || m.src === "tool"); // вывод модели или запись «по инструменту», пока человек не подтвердил
   const INJECT = /(игнорируй|забудь|отмени)\s+(все\s+|предыдущ|прежн|свои|системн)|ignore\s+(all\s+|any\s+)?(previous|prior|above)|system\s*prompt|системн\w+\s+(промпт|инструкц)|ты\s+теперь\s+(не\s+)?(ассистент|помощница|бот)|reveal\s+your/i;
-  const SINGULAR = ["живёт", "живет", "работает", "должность", "учится", "переехал"];
+  const SINGULAR = ["живёт", "живет", "работает", "должность", "учится", "переехал", "заказчик", "исполнитель", "поставщик", "подрядчик", "покупатель", "ответственный"];
   /** Привязывает сущности к воспоминанию и записывает связь «кто — отношение — кто». Для «единственных» отношений (живёт, работает…) прежний факт закрывается датой. */
   const linkEntities = (memId, ents, rel) => {
     const ids = new Set((Array.isArray(ents) ? ents : []).slice(0, 5).map((e) => entityId(typeof e === "string" ? e : e?.name)).filter(Boolean));
@@ -443,11 +486,40 @@ export async function openDb(root) {
       const path = []; for (let p = e.parent, k = 0; p && k < 4; k++) { const r = rows("SELECT id, name, parent FROM entities WHERE id = ?", [p])[0]; if (!r) break; path.unshift({ id: r.id, name: r.name }); p = r.parent; }
       const kids = rows("SELECT id, name, etype AS type FROM entities WHERE parent = ?", [id]), mems = new Map(memRows().map((m) => [m.id, m]));
       const cnt = (eid) => rows("SELECT memory_id AS m FROM mem_entities WHERE entity_id = ?", [eid]).filter((r) => mems.has(r.m)).length;
-      const own = [id, ...kids.filter((k) => k.type === "part").map((k) => k.id)], seen = new Set(), today = now().slice(0, 10);
+      const own = [id, ...kids.filter((k) => ["part", "addendum", "act", "invoice"].includes(k.type)).map((k) => k.id)], seen = new Set(), today = now().slice(0, 10);
       const events = own.flatMap((eid) => rows("SELECT memory_id AS m FROM mem_entities WHERE entity_id = ?", [eid]).map((r) => r.m)).filter((m) => mems.has(m) && !seen.has(m) && seen.add(m)).map((m) => mems.get(m))
         .map((m) => ({ id: m.id, text: m.text, when: m.validFrom ?? String(m.createdAt).slice(0, 10), past: Boolean(m.validTo && m.validTo < today), dueAt: m.dueAt ?? null, conf: Math.round(m.conf * 100) / 100 })).sort((a, b) => a.when.localeCompare(b.when) || a.id - b.id);
       const next = events.filter((x) => x.dueAt && x.dueAt >= today).sort((a, b) => a.dueAt.localeCompare(b.dueAt))[0] ?? null;
-      return { id: e.id, name: e.name, type: e.type, typeLabel: equip.TYPE_LABEL[e.type] ?? null, path, children: kids.map((k) => ({ id: k.id, name: k.name, type: k.type, typeLabel: equip.TYPE_LABEL[k.type] ?? null, n: cnt(k.id) })).sort((a, b) => b.n - a.n), events: events.slice(-60), total: events.length, next: next ? { id: next.id, text: next.text, due: next.dueAt } : null };
+      const links = rows("SELECT r.rel AS rel, r.subj AS subj, r.obj AS obj, r.memory_id AS mid, s.name AS sn, s.etype AS st, o.name AS on_, o.etype AS ot FROM relations r JOIN entities s ON s.id = r.subj JOIN entities o ON o.id = r.obj WHERE r.subj = ? OR r.obj = ?", [id, id]).filter((r) => r.mid == null || mems.has(r.mid))
+        .map((r) => (r.subj === id ? { id: r.obj, name: r.on_, type: r.ot, typeLabel: equip.TYPE_LABEL[r.ot] ?? null, rel: r.rel, dir: "out" } : { id: r.subj, name: r.sn, type: r.st, typeLabel: equip.TYPE_LABEL[r.st] ?? null, rel: r.rel, dir: "in" })).filter((x, i, a) => a.findIndex((y) => y.id === x.id && y.rel === x.rel) === i).slice(0, 20);
+      const money = e.type === "contract" ? contractMoney(id, mems) : null;
+      return { id: e.id, name: e.name, type: e.type, typeLabel: equip.TYPE_LABEL[e.type] ?? null, links, money, path, children: kids.map((k) => ({ id: k.id, name: k.name, type: k.type, typeLabel: equip.TYPE_LABEL[k.type] ?? null, n: cnt(k.id) })).sort((a, b) => b.n - a.n), events: events.slice(-60), total: events.length, next: next ? { id: next.id, text: next.text, due: next.dueAt } : null };
+    },
+    /** Каталог договоров: контрагент, ответственный, деньги, срок, состав; итоги по контрагентам и годам. */
+    contracts: () => {
+      const mems = new Map(memRows().map((m) => [m.id, m])), today = now().slice(0, 10), soon = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+      const items = rows("SELECT e.id, e.name, e.parent, p.name AS party FROM entities e LEFT JOIN entities p ON p.id = e.parent WHERE e.etype = 'contract'").map((e) => {
+        const kids = rows("SELECT id, etype FROM entities WHERE parent = ?", [e.id]), ids = [e.id, ...kids.map((k) => k.id)];
+        const ms = [...new Set(ids.flatMap((i) => rows("SELECT memory_id AS m FROM mem_entities WHERE entity_id = ?", [i]).map((r) => r.m)))].filter((m) => mems.has(m)).map((m) => mems.get(m));
+        const resp = rows("SELECT o.name AS n, r.memory_id AS mid FROM relations r JOIN entities o ON o.id = r.obj WHERE r.subj = ? AND r.rel = 'ответственный'", [e.id]).filter((r) => mems.has(r.mid) && !mems.get(r.mid).validTo).sort((a, b) => b.mid - a.mid)[0]?.n ?? null;
+        const money = contractMoney(e.id, mems), dues = ms.map((m) => m.dueAt).filter((d) => d && d >= today).sort(), term = money.term, year = /(20\d\d)/.exec(e.name)?.[1] ?? (ms.length ? String(Math.min(...ms.map((m) => Date.parse(m.createdAt))) && new Date(Math.min(...ms.map((m) => Date.parse(m.createdAt)))).getUTCFullYear()) : null);
+        const nextDue = [term && term >= today ? term : null, dues[0] ?? null].filter(Boolean).sort()[0] ?? null;
+        return { id: e.id, name: e.name, party: e.party ?? null, responsible: resp, ...money, nextDue, overdue: Boolean(term && term < today), expiring: Boolean(nextDue && nextDue <= soon), hasAct: kids.some((k) => k.etype === "act"), acts: kids.filter((k) => k.etype === "act").length, addenda: kids.filter((k) => k.etype === "addendum").length, invoices: kids.filter((k) => k.etype === "invoice").length, facts: ms.length, year };
+      }).filter((c) => c.facts).sort((a, b) => (a.nextDue ?? "9999").localeCompare(b.nextDue ?? "9999") || b.facts - a.facts);
+      const agg = (key) => [...items.reduce((m, c) => { const k = c[key] ?? "—"; const o = m.get(k) ?? { name: k, total: 0, paid: 0, n: 0 }; o.total += c.total ?? 0; o.paid += c.paid ?? 0; o.n++; return m.set(k, o); }, new Map()).values()].sort((a, b) => b.total - a.total).slice(0, 12);
+      return { items, totals: { all: { total: items.reduce((a, c) => a + (c.total ?? 0), 0), paid: items.reduce((a, c) => a + (c.paid ?? 0), 0), n: items.length }, byParty: agg("party"), byYear: agg("year").sort((a, b) => String(b.name).localeCompare(String(a.name))) } };
+    },
+    /** Похожие номера, которые я не стала склеивать сама. */
+    entityPairs: () => rows("SELECT p.a, p.b, x.name AS an, y.name AS bn, x.etype AS t, (SELECT count(*) FROM mem_entities WHERE entity_id = p.a) AS ac, (SELECT count(*) FROM mem_entities WHERE entity_id = p.b) AS bc FROM entity_pairs p JOIN entities x ON x.id = p.a JOIN entities y ON y.id = p.b WHERE p.state = 'open' LIMIT 30").map((r) => ({ a: { id: r.a, name: r.an, n: r.ac }, b: { id: r.b, name: r.bn, n: r.bc }, typeLabel: equip.TYPE_LABEL[r.t] ?? null })),
+    /** same: true — это один и тот же объект (склеиваем), false — разные (больше не спрашиваем). */
+    resolvePair: (a, b, same) => {
+      const x = Math.min(a, b), y = Math.max(a, b); if (!rows("SELECT 1 AS k FROM entity_pairs WHERE a = ? AND b = ? AND state = 'open'", [x, y]).length) return { error: "Такой пары нет" };
+      if (!same) { db.run("UPDATE entity_pairs SET state = 'different' WHERE a = ? AND b = ?", [x, y]); store.save(); return { ok: true }; }
+      const cnt = (i) => rows("SELECT count(*) AS n FROM mem_entities WHERE entity_id = ?", [i])[0].n, keep = cnt(x) >= cnt(y) ? x : y, drop = keep === x ? y : x, dk = rows("SELECT key FROM entities WHERE id = ?", [drop])[0]?.key;
+      db.run("UPDATE OR IGNORE mem_entities SET entity_id = ? WHERE entity_id = ?", [keep, drop]); db.run("UPDATE OR IGNORE relations SET subj = ? WHERE subj = ?", [keep, drop]); db.run("UPDATE OR IGNORE relations SET obj = ? WHERE obj = ?", [keep, drop]);
+      db.run("UPDATE entities SET parent = ? WHERE parent = ?", [keep, drop]); db.run("UPDATE OR IGNORE contract_facts SET entity_id = ? WHERE entity_id = ?", [keep, drop]); db.run("UPDATE OR IGNORE entity_alias SET entity_id = ? WHERE entity_id = ?", [keep, drop]);
+      if (dk) db.run("INSERT OR IGNORE INTO entity_alias(key, entity_id, user) VALUES (?, ?, 0)", [dk, keep]);
+      db.run("DELETE FROM entities WHERE id = ?", [drop]); cache = null; save(); return { ok: true, keep };
     },
     /** Свой словарь: «бортовой» → эта машина. Уже записанные факты со словом тоже привязываются. */
     addAlias: (id, alias) => {
@@ -780,6 +852,10 @@ export async function openDb(root) {
   if (rows("SELECT value FROM meta WHERE key = 'equip_scan'")[0]?.value !== "1") { // один раз: старые факты тоже получают типы, иерархию и привязку к технике
     try { db.run("BEGIN"); for (const m of memRows()) autoEquip(m.id, m.text); db.run("COMMIT"); } catch { try { db.run("ROLLBACK"); } catch { /* уже откачено */ } }
     db.run("INSERT INTO meta(key, value) VALUES ('equip_scan', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"); cache = null; store.save();
+  }
+  if (rows("SELECT value FROM meta WHERE key = 'contract_scan'")[0]?.value !== "1") { // один раз: старые факты тоже разбираются на договоры
+    try { db.run("BEGIN"); for (const m of memRows()) autoContracts(m.id, m.text); checkConfusable(); db.run("COMMIT"); } catch { try { db.run("ROLLBACK"); } catch { /* уже откачено */ } }
+    db.run("INSERT INTO meta(key, value) VALUES ('contract_scan', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"); cache = null; store.save();
   }
   return api;
 }

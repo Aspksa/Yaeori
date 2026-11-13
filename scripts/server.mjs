@@ -429,6 +429,9 @@ export function createApp({ root, db, dist = null }) {
     }
     { const um = /^\/api\/units\/(\d+)$/.exec(pathname); if (um && req.method === "GET") { const r = db.unitHistory(Number(um[1])); return r ? json(res, 200, r) : json(res, 404, { error: "Нет такой сущности" }); } }
     { const am = /^\/api\/entities\/(\d+)\/alias$/.exec(pathname); if (am && (req.method === "POST" || req.method === "DELETE")) { let b; try { b = await body(req, 1024); } catch { return json(res, 400, { error: "Некорректный запрос" }); } const r = req.method === "POST" ? db.addAlias(Number(am[1]), b.alias) : db.removeAlias(Number(am[1]), b.alias); return r.error ? json(res, 400, r) : json(res, 200, r); } }
+    if (pathname === "/api/contracts" && req.method === "GET") return json(res, 200, db.contracts());
+    if (pathname === "/api/entity-pairs" && req.method === "GET") return json(res, 200, { items: db.entityPairs() });
+    if (pathname === "/api/entity-pairs" && req.method === "POST") { let b; try { b = await body(req, 1024); } catch { return json(res, 400, { error: "Некорректный запрос" }); } const r = db.resolvePair(Number(b.a), Number(b.b), b.same === true); return r.error ? json(res, 400, r) : json(res, 200, r); }
     if (pathname === "/api/entities" && req.method === "GET") return json(res, 200, { items: db.entityList() });
     if (pathname === "/api/memories/inactive" && req.method === "GET") return json(res, 200, { items: db.inactive() });
     if (pathname === "/api/memories/compress" && req.method === "POST") {

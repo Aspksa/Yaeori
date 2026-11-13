@@ -1,10 +1,10 @@
-import type { AsOf, ChatInfo, Clusters, Dispute, Hypothesis, Entity, UnitInfo, Inactive, RecallCfg, Review, SleepInfo, VecInfo } from "./api";
+import type { AsOf, ChatInfo, Clusters, Dispute, Hypothesis, Entity, UnitInfo, ContractsInfo, EntityPair, Inactive, RecallCfg, Review, SleepInfo, VecInfo } from "./api";
 import type { GraphData } from "./api";
 
-type Tab = "chats" | "memory" | "sense" | "links";
+type Tab = "chats" | "memory" | "sense" | "links" | "contracts";
 type Filter = "all" | "fresh" | "long" | "fading";
 export interface ListState { chats: ChatInfo[]; brain: GraphData | null; current: number; vec: VecInfo | null; building?: boolean }
-export interface ListHandlers { more(areaId: number): void; openChat(id: number): void; focus(token: string): void; pin(tokens: string[]): void; kinds(k: string[]): void; edit(id: number, patch: { text?: string; topics?: string; pinned?: boolean }): Promise<unknown>; forget(id: number): Promise<unknown>; review(): Promise<Review>; merge(keep: number, drop: number[], history?: boolean): Promise<unknown>; compress(ids: number[], text: string, topic: string): Promise<unknown>; inactive(): Promise<Inactive[]>; entities(): Promise<Entity[]>; unit(id: number): Promise<UnitInfo>; alias(id: number, word: string, remove?: boolean): Promise<{ error?: string }>; restore(id: number): Promise<unknown>; clusters(): Promise<Clusters>; hypotheses(): Promise<Hypothesis[]>; confirm(id: number): Promise<unknown>; correct(id: number, text: string): Promise<unknown>; asOf(date: string, q: string): Promise<AsOf>; recallCfg(): Promise<RecallCfg>; setRecallCfg(c: { weights?: RecallCfg["weights"]; rerank?: boolean; check?: boolean }): Promise<RecallCfg>; disputes(): Promise<Dispute[]>; resolve(a: number, b: number, keep: number | null): Promise<unknown>; sleepInfo(): Promise<{ last: SleepInfo | null; sleeping: boolean }>; sleep(): Promise<SleepInfo>; build(): void; setEmbedModel(m: string): void }
+export interface ListHandlers { more(areaId: number): void; openChat(id: number): void; focus(token: string): void; pin(tokens: string[]): void; kinds(k: string[]): void; edit(id: number, patch: { text?: string; topics?: string; pinned?: boolean }): Promise<unknown>; forget(id: number): Promise<unknown>; review(): Promise<Review>; merge(keep: number, drop: number[], history?: boolean): Promise<unknown>; compress(ids: number[], text: string, topic: string): Promise<unknown>; inactive(): Promise<Inactive[]>; entities(): Promise<Entity[]>; unit(id: number): Promise<UnitInfo>; contracts(): Promise<ContractsInfo>; pairs(): Promise<EntityPair[]>; resolvePair(a: number, b: number, same: boolean): Promise<{ error?: string }>; alias(id: number, word: string, remove?: boolean): Promise<{ error?: string }>; restore(id: number): Promise<unknown>; clusters(): Promise<Clusters>; hypotheses(): Promise<Hypothesis[]>; confirm(id: number): Promise<unknown>; correct(id: number, text: string): Promise<unknown>; asOf(date: string, q: string): Promise<AsOf>; recallCfg(): Promise<RecallCfg>; setRecallCfg(c: { weights?: RecallCfg["weights"]; rerank?: boolean; check?: boolean }): Promise<RecallCfg>; disputes(): Promise<Dispute[]>; resolve(a: number, b: number, keep: number | null): Promise<unknown>; sleepInfo(): Promise<{ last: SleepInfo | null; sleeping: boolean }>; sleep(): Promise<SleepInfo>; build(): void; setEmbedModel(m: string): void }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const DAY = 86400000;
@@ -27,7 +27,7 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
   let hyp: Hypothesis[] | null = null, hypAsked = false, hypStale = false, asDate = "", asQ = "", asRes: AsOf | null = null, asBusy = false, asErr = "";
   let cfg: RecallCfg | null = null, cfgAsked = false, cfgNote = "", disp: Dispute[] | null = null, dispAsked = false;
   let slp: { last: SleepInfo | null; sleeping: boolean } | null = null, slpBusy = false, slpAsked = false;
-  const units = new Map<number, UnitInfo | "load" | "err">(); let aliasNote = "";
+  const units = new Map<number, UnitInfo | "load" | "err">(); let aliasNote = ""; let con: ContractsInfo | null = null, conAsked = false, conStale = false, pairs: EntityPair[] = [], conFilter = "all"; const conOpen = new Set<number>();
   const closed = new Set<number>(), pages = new Map<number, number>(), relOpen = new Set<number>(); let locked: string | null = null, editing: number | null = null, rev: Review | null = null, revBusy = false, revNote = "", archOpen = false, inact: Inactive[] | null = null, ents: Entity[] | null = null, entLoading = false; const entOpen = new Set<number>(), kindsOn = new Set(["topic", "sense", "chat", "entity", "habit"]);
   root.innerHTML = `<div class="ls-top"><div class="ls-tabs" role="tablist" aria-label="Что показывать в списке"></div>
     <input class="ls-q" type="search" placeholder="Найти…" autocomplete="off" spellcheck="false" aria-label="Поиск по списку" /><div class="ls-chips" role="radiogroup" aria-label="Фильтр памяти" hidden></div></div>
@@ -49,6 +49,27 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
   const why = (words: string[]) => words.length ? words.map((w) => (w === "по смыслу" || w === "из одной беседы" ? w : w.startsWith("@") ? "«" + esc(w.slice(1)) + "»" : "тема «" + esc(w) + "»")).join(" · ") : "связаны";
   const KINDS: [string, string][] = [["topic", "Тема"], ["sense", "Смысл"], ["chat", "Беседа"], ["entity", "Сущность"], ["habit", "Привычка"]];
   const kindsOf = (l: { kinds?: string[] }) => (l.kinds?.length ? l.kinds : ["topic"]);
+  const fmtRub = (n: number | null | undefined) => (n == null ? "—" : Math.round(n).toLocaleString("ru-RU") + " ₽");
+  function unitBlock(u: UnitInfo) {
+    const money = u.money ? `<p class="ls-next">Цена ${fmtRub(u.money.total)} · оплачено ${fmtRub(u.money.paid)} · остаток ${fmtRub(u.money.remain)}${u.money.term ? ` · срок до ${esc(u.money.term)}` : ""}</p>` : "";
+    const links = u.links?.length ? `<p class="ls-kids">Связано: ${u.links.slice(0, 10).map((l) => `${esc(l.name)}${l.typeLabel ? ` <em>${esc(l.typeLabel)}</em>` : ""} <em>${esc(l.rel)}</em>`).join(" · ")}</p>` : "";
+    return money + links + `${u.path.length ? `<p class="ls-path">${u.path.map((p) => esc(p.name)).join(" › ")} › <b>${esc(u.name)}</b></p>` : ""}${u.next ? `<p class="ls-next">⏰ Ближайший срок ${esc(u.next.due)}: ${esc(u.next.text)}</p>` : ""}${u.children.length ? `<p class="ls-kids">В составе: ${u.children.slice(0, 12).map((c) => `${esc(c.name)}${c.typeLabel ? ` <em>${esc(c.typeLabel)}</em>` : ""} ${c.n}`).join(" · ")}</p>` : ""}${u.events.length ? `<div class="ls-tl">${u.events.map((x) => `<button type="button" class="ls-row ls-sub${x.past ? " past" : ""}" data-mem="${x.id}"><span class="ls-t"><em>${esc(x.when)}</em> ${esc(x.text)}${x.dueAt ? ` · ⏰ ${esc(x.dueAt)}` : ""}${x.conf < 0.5 ? " · ❓" : ""}</span></button>`).join("")}</div>${u.total > u.events.length ? `<small>Показаны последние ${u.events.length} из ${u.total}</small>` : ""}` : ""}`;
+  }
+  function ensureUnit(id: number) { if (!units.has(id)) { units.set(id, "load"); void h.unit(id).then((x) => { units.set(id, x); }, () => { units.set(id, "err"); }).finally(render); } return units.get(id); }
+  function contractsHtml() {
+    if (!conAsked || conStale) { conAsked = true; conStale = false; void Promise.all([h.contracts(), h.pairs()]).then(([c, p]) => { con = c; pairs = p; }, () => {}).finally(render); }
+    if (!con) return `<p class="ls-none">Собираю договоры…</p>`;
+    const pr = pairs.length ? `<div class="ls-vec"><div class="ls-vh"><b>Похожие номера</b><span>${pairs.length}</span></div><small>Номера отличаются одной цифрой. Склеивать их или это разные?</small>${pairs.map((p) => `<div class="ls-card warn"><div class="ls-ct">${esc(p.typeLabel ?? "")}</div><p>${esc(p.a.name)} <em>${p.a.n}</em></p><p>${esc(p.b.name)} <em>${p.b.n}</em></p><div class="ls-eb"><button type="button" class="ls-btn" data-pair-same="${p.a.id}:${p.b.id}">Это один</button><button type="button" class="ls-btn" data-pair-diff="${p.a.id}:${p.b.id}">Разные</button></div></div>`).join("")}</div>` : "";
+    const T = con.totals, tot = `<p class="ls-note">Договоров ${T.all.n} · сумма ${fmtRub(T.all.total)} · оплачено ${fmtRub(T.all.paid)}</p>${T.byParty.length > 1 || T.byYear.length > 1 ? `<details class="ls-vec"><summary><b>Итоги</b></summary>${T.byParty.map((x) => `<p class="ls-kids">${esc(x.name)}: ${x.n} · ${fmtRub(x.total)}</p>`).join("")}${T.byYear.map((x) => `<p class="ls-kids">${esc(String(x.name))} год: ${x.n} · ${fmtRub(x.total)}</p>`).join("")}</details>` : ""}`;
+    const F: [string, string][] = [["all", "Все"], ["soon", "Скоро срок"], ["over", "Просрочены"], ["noact", "Без акта"]];
+    const chipsH = `<div class="ls-kinds" role="group" aria-label="Фильтр договоров">${F.map(([k, t]) => `<button type="button" class="ls-k" data-cf="${k}" aria-pressed="${conFilter === k}">${t}</button>`).join("")}</div>`;
+    const rows = con.items.filter((c) => (conFilter === "soon" ? c.expiring : conFilter === "over" ? c.overdue : conFilter === "noact" ? !c.hasAct : true) && (!q || (c.name + " " + (c.party ?? "") + " " + (c.responsible ?? "")).toLowerCase().includes(q)));
+    const body2 = rows.map((c) => {
+      const open = conOpen.has(c.id), u = open ? ensureUnit(c.id) : null;
+      return `<div class="ls-ent"><button type="button" class="ls-row" data-con="${c.id}" aria-expanded="${open}"><i class="dot sq"></i><span class="ls-t">${esc(c.name)}${c.party ? ` <span class="ls-par">· ${esc(c.party)}</span>` : ""}</span><span class="ls-m">${fmtRub(c.total)}${c.remain != null ? ` · ост. ${fmtRub(c.remain)}` : ""}${c.nextDue ? ` · ⏰ ${esc(c.nextDue)}` : ""}${c.overdue ? " · просрочен" : ""}${!c.hasAct ? " · без акта" : ""}</span></button>${open ? `<p class="ls-kids">${c.responsible ? `Ответственный: ${esc(c.responsible)} · ` : ""}доп. соглашений ${c.addenda} · актов ${c.acts} · счетов ${c.invoices}</p>${u && typeof u === "object" ? unitBlock(u) : "<small>Собираю историю…</small>"}` : ""}</div>`;
+    }).join("");
+    return pr + tot + chipsH + (body2 || `<p class="ls-none">${con.items.length ? "Ничего не подошло." : "Договоров пока нет. Они появятся, когда в беседе прозвучит «договор №…»."}</p>`);
+  }
   function entitiesHtml() {
     if (!ents) { if (!entLoading) { entLoading = true; void h.entities().then((x) => { ents = x; }, () => { ents = []; }).finally(() => { entLoading = false; render(); }); } return ""; }
     const rows = ents.filter((e) => !q || e.name.toLowerCase().includes(q)).slice(0, 40); if (!rows.length) return "";
@@ -56,7 +77,7 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
       const open = entOpen.has(e.id), rel = e.relations.length ? e.relations.map((r) => `<p class="${r.past ? "past" : ""}">${esc(r.s)} <em>${esc(r.r)}</em> ${esc(r.o)}${r.past ? " · раньше" : ""}</p>`).join("") : "";
       const mems = open ? e.memories.map((id) => `<button type="button" class="ls-row ls-sub" data-mem="${id}"><span class="ls-t">${esc(textOf(id))}</span></button>`).join("") : "";
       const u = open ? units.get(e.id) : null; if (open && !u) { units.set(e.id, "load"); void h.unit(e.id).then((x) => { units.set(e.id, x); }, () => { units.set(e.id, "err"); }).finally(render); }
-      const hist = u && typeof u === "object" ? `${u.path.length ? `<p class="ls-path">${u.path.map((p) => esc(p.name)).join(" › ")} › <b>${esc(u.name)}</b></p>` : ""}${u.next ? `<p class="ls-next">⏰ Ближайший срок ${esc(u.next.due)}: ${esc(u.next.text)}</p>` : ""}${u.children.length ? `<p class="ls-kids">В составе: ${u.children.slice(0, 12).map((c) => `${esc(c.name)}${c.typeLabel ? ` <em>${esc(c.typeLabel)}</em>` : ""} ${c.n}`).join(" · ")}</p>` : ""}${u.events.length ? `<div class="ls-tl">${u.events.map((x) => `<button type="button" class="ls-row ls-sub${x.past ? " past" : ""}" data-mem="${x.id}"><span class="ls-t"><em>${esc(x.when)}</em> ${esc(x.text)}${x.dueAt ? ` · ⏰ ${esc(x.dueAt)}` : ""}${x.conf < 0.5 ? " · ❓" : ""}</span></button>`).join("")}</div>${u.total > u.events.length ? `<small>Показаны последние ${u.events.length} из ${u.total}</small>` : ""}` : ""}` : open && u === "load" ? `<small>Собираю историю…</small>` : "";
+      const hist = u && typeof u === "object" ? unitBlock(u) : open && u === "load" ? `<small>Собираю историю…</small>` : "";
       const ali = open ? `<div class="ls-al"><small>Другие названия:</small> ${(e.aliases ?? []).map((a) => `<button type="button" class="ls-chip" data-unal="${e.id}" data-aw="${esc(a)}" title="Убрать">${esc(a)} ×</button>`).join("")}<form data-alias="${e.id}"><input type="text" maxlength="30" placeholder="своё слово: бортовой" aria-label="Другое название" /><button type="submit" class="ls-btn">Добавить</button></form>${aliasNote ? `<small>${esc(aliasNote)}</small>` : ""}</div>` : "";
       return `<div class="ls-ent"><button type="button" class="ls-row" data-ent="${e.id}" aria-expanded="${open}"><i class="dot sq"></i><span class="ls-t">${esc(e.name)}${e.typeLabel ? ` <em class="ls-ty">${esc(e.typeLabel)}</em>` : ""}${e.parent ? ` <span class="ls-par">· ${esc(e.parent)}</span>` : ""}</span><span class="ls-m">${e.memories.length}</span></button>${open ? hist + rel + ali + mems : ""}</div>`;
     }).join("");
@@ -150,14 +171,14 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
   }
   function render() {
     const nm = st.brain?.messages.length ?? 0;
-    tabs.innerHTML = (["chats", "memory", "sense", "links"] as Tab[]).map((t) => `<button type="button" role="tab" aria-selected="${t === tab}" data-tab="${t}">${t === "chats" ? "Беседы" : t === "memory" ? "Память" : t === "sense" ? "Смысл" : "Связи"}<em>${t === "chats" ? st.chats.length : t === "memory" ? nm : t === "sense" ? clu?.items.length ?? "·" : st.brain?.links.length ?? 0}</em></button>`).join("");
+    tabs.innerHTML = (["chats", "memory", "sense", "links", "contracts"] as Tab[]).map((t) => `<button type="button" role="tab" aria-selected="${t === tab}" data-tab="${t}">${t === "chats" ? "Беседы" : t === "memory" ? "Память" : t === "contracts" ? "Договоры" : t === "sense" ? "Смысл" : "Связи"}<em>${t === "chats" ? st.chats.length : t === "memory" ? nm : t === "sense" ? clu?.items.length ?? "·" : st.brain?.links.length ?? 0}</em></button>`).join("");
     chips.hidden = tab !== "memory";
     root.querySelector(".ls-q")!.toggleAttribute("hidden", false);
     chips.innerHTML = FILTERS.map(([id, t]) => `<button type="button" role="radio" aria-checked="${id === filter}" data-f="${id}">${t}</button>`).join("");
-    const top = body.scrollTop; body.innerHTML = tab === "chats" ? chatsHtml() : tab === "memory" ? memHtml() : tab === "sense" ? senseHtml() : linksHtml(); body.scrollTop = top;
+    const top = body.scrollTop; body.innerHTML = tab === "chats" ? chatsHtml() : tab === "memory" ? memHtml() : tab === "sense" ? senseHtml() : tab === "contracts" ? contractsHtml() : linksHtml(); body.scrollTop = top;
   }
   root.addEventListener("click", (e) => {
-    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-unal],[data-hok],[data-hed],[data-hno],[data-asgo],[data-cl],[data-clm],[data-clp],[data-cfg],[data-dk-a],[data-dk-b],[data-dk-both],[data-sleep],[data-pg],[data-more],[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area],[data-build],[data-em],[data-rel],[data-pair],[data-kind],[data-pin],[data-edit],[data-cancel],[data-forget],[data-review],[data-mg],[data-skip-mg],[data-keep-a],[data-keep-b],[data-skip-cf],[data-cp],[data-skip-cp],[data-arch],[data-restore],[data-ent]"); if (!t) return;
+    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-con],[data-cf],[data-pair-same],[data-pair-diff],[data-unal],[data-hok],[data-hed],[data-hno],[data-asgo],[data-cl],[data-clm],[data-clp],[data-cfg],[data-dk-a],[data-dk-b],[data-dk-both],[data-sleep],[data-pg],[data-more],[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area],[data-build],[data-em],[data-rel],[data-pair],[data-kind],[data-pin],[data-edit],[data-cancel],[data-forget],[data-review],[data-mg],[data-skip-mg],[data-keep-a],[data-keep-b],[data-skip-cf],[data-cp],[data-skip-cp],[data-arch],[data-restore],[data-ent]"); if (!t) return;
     const d = t.dataset;
     if (d.review) { revBusy = true; revNote = ""; render(); void h.review().then((r) => { rev = r; }, (e: Error) => { revNote = e.message; }).finally(() => { revBusy = false; render(); }); }
     else if (d.mg) { const g = rev?.merges[Number(d.mg)]; if (g) { rev!.merges.splice(Number(d.mg), 1); void h.merge(g.keep, g.items.filter((i) => i.id !== g.keep).map((i) => i.id)); render(); } }
@@ -168,6 +189,9 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     else if (d.arch) { archOpen = !archOpen; if (archOpen) { void h.inactive().then((x) => { inact = x; render(); }); } render(); }
     else if (d.restore) { inact = inact?.filter((x) => x.id !== Number(d.restore)) ?? null; void h.restore(Number(d.restore)); render(); }
     else if (d.skipCf) { rev?.conflicts.splice(Number(d.skipCf), 1); render(); }
+    else if (d.con) { const id = Number(d.con); if (conOpen.has(id)) conOpen.delete(id); else conOpen.add(id); render(); }
+    else if (d.cf) { conFilter = d.cf; render(); }
+    else if (d.pairSame || d.pairDiff) { const [x, y] = String(d.pairSame ?? d.pairDiff).split(":").map(Number); void h.resolvePair(x!, y!, Boolean(d.pairSame)).finally(() => { conStale = true; ents = null; units.clear(); render(); }); }
     else if (d.unal) { void h.alias(Number(d.unal), d.aw ?? "", true).then(() => { aliasNote = ""; ents = null; units.delete(Number(d.unal)); }).finally(render); }
     else if (d.ent) { const id = Number(d.ent), e = ents?.find((x) => x.id === id); if (entOpen.has(id)) { entOpen.delete(id); locked = null; h.pin([]); } else { entOpen.clear(); entOpen.add(id); if (e) { locked = "ent:" + id; h.pin(e.memories.map((m) => "mem:" + m)); h.focus("mem:" + e.memories[0]); } } render(); }
     else if (d.pin) { const m = st.brain?.messages.find((x) => x.id === Number(d.pin)); void h.edit(Number(d.pin), { pinned: !m?.pinned }); }
@@ -209,5 +233,5 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
   root.addEventListener("mouseout", (e) => { if ((e.target as HTMLElement).closest("[data-mem]") && !locked) h.pin([]); });
   input.addEventListener("input", () => { q = input.value.trim().toLowerCase(); render(); });
   render();
-  return { update(s: ListState) { st = s; ents = null; units.clear(); cluStale = true; hypStale = true; render(); } };
+  return { update(s: ListState) { st = s; ents = null; units.clear(); conStale = true; cluStale = true; hypStale = true; render(); } };
 }
