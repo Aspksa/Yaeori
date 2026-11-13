@@ -84,3 +84,6 @@ export const getRecallCfg = () => call<RecallCfg>("/api/recall");
 export const setRecallCfg = (c: { weights?: RecallCfg["weights"]; rerank?: boolean }) => call<RecallCfg>("/api/recall", { method: "PUT", body: JSON.stringify(c) });
 export const getDisputes = () => call<{ items: Dispute[] }>("/api/disputes");
 export const resolveDispute = (a: number, b: number, keep: number | null) => call<{ ok: true }>("/api/disputes/resolve", { method: "POST", body: JSON.stringify({ a, b, keep }) });
+export interface Cluster { id: number; size: number; label: string; topics: { t: string; n: number }[]; mix: boolean; tight: number; top: { id: number; text: string }[]; ids: number[] }
+export interface Clusters { items: Cluster[]; withVec: number; total: number }
+export const getClusters = () => call<Clusters>("/api/clusters");

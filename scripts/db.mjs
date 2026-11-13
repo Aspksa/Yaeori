@@ -456,6 +456,31 @@ export async function openDb(root) {
       }
       return { merged, disputed };
     },
+    /** Скопления по смыслу: k-средних по векторам (центры считаем по выборке, потом раскладываем все), независимо от тем, которые дала модель. */
+    clusters: ({ k } = {}) => {
+      memRows(); if (cache.cl) return cache.cl;
+      const vs = cache.rows.filter((m) => m.vec); const res = { items: [], withVec: vs.length, total: cache.rows.length };
+      if (vs.length < 6) return (cache.cl = res);
+      const dim = vs[0].vec.length, all = vs.filter((m) => m.vec.length === dim), K = Math.max(2, Math.min(k ?? 24, k ?? Math.round(Math.sqrt(all.length / 2))));
+      const sample = all.length > 2500 ? all.filter((_, i) => i % Math.ceil(all.length / 2500) === 0) : all;
+      // начальные центры: самый дальний от уже выбранных
+      const cents = [Float32Array.from(sample[0].vec, (x) => x * sample[0].vec.s)], minSim = sample.map((m) => dot(m.vec, cents[0]));
+      while (cents.length < K) { let bi = 0; for (let i = 1; i < sample.length; i++) if (minSim[i] < minSim[bi]) bi = i; const v = Float32Array.from(sample[bi].vec, (x) => x * sample[bi].vec.s); cents.push(v); sample.forEach((m, i) => { minSim[i] = Math.max(minSim[i], dot(m.vec, v)); }); }
+      const nearest = (m) => { let bi = 0, bs = -2; for (let c = 0; c < cents.length; c++) { const sm = dot(m.vec, cents[c]); if (sm > bs) { bs = sm; bi = c; } } return [bi, bs]; };
+      for (let it = 0; it < 6; it++) {
+        const sums = cents.map(() => new Float32Array(dim)), cnt = cents.map(() => 0);
+        for (const m of sample) { const [c] = nearest(m); cnt[c]++; const sc = m.vec.s, a = sums[c]; for (let i = 0; i < dim; i++) a[i] += m.vec[i] * sc; }
+        sums.forEach((a, c) => { if (!cnt[c]) return; let n = 0; for (let i = 0; i < dim; i++) n += a[i] * a[i]; n = Math.sqrt(n) || 1; for (let i = 0; i < dim; i++) a[i] /= n; cents[c] = a; });
+      }
+      const groups = cents.map(() => []); for (const m of all) { const [c, sm] = nearest(m); groups[c].push([sm, m]); }
+      res.items = groups.filter((g) => g.length >= 2).map((g, i) => {
+        g.sort((a, b) => b[0] - a[0]); const ms = g.map((x) => x[1]), tc = new Map(), wc = new Map();
+        for (const m of ms) { tc.set(m.topics[0], (tc.get(m.topics[0]) ?? 0) + 1); for (const w of meta(m).w) wc.set(w, (wc.get(w) ?? 0) + 1); }
+        const topics = [...tc].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([t, n]) => ({ t, n })), words = [...wc].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([w]) => w);
+        return { id: i + 1, size: ms.length, label: [...new Set([topics[0].t, ...words])].join(" · "), topics, mix: topics.length > 1 && topics[1].n >= ms.length * 0.25, tight: Math.round((g.reduce((a, x) => a + x[0], 0) / g.length) * 100) / 100, top: ms.slice(0, 6).map((m) => ({ id: m.id, text: m.text })), ids: ms.slice(0, 200).map((m) => m.id) };
+      }).sort((a, b) => b.size - a.size);
+      return (cache.cl = res);
+    },
     countMemories: () => rows("SELECT count(*) AS n FROM memories WHERE state IS NULL")[0].n,
     /** Последние реплики из всех чатов для сканирования старых бесед. */
     transcript: (limit = 60) => rows("SELECT chat_id AS chatId, role, content FROM (SELECT id, chat_id, role, content FROM messages ORDER BY id DESC LIMIT ?) ORDER BY id", [limit]),

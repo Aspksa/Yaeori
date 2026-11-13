@@ -1,4 +1,4 @@
-import { getDisputes, getRecallCfg, resolveDispute, setRecallCfg, confirmMemory, correctMemory, getSleep, runSleep, createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
+import { getClusters, getDisputes, getRecallCfg, resolveDispute, setRecallCfg, confirmMemory, correctMemory, getSleep, runSleep, createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
 import { mountList } from "./list";
 import { esc as mdEsc, renderText } from "./md";
 export { renderText };
@@ -74,7 +74,7 @@ export function mountHome(): () => void {
     review: () => reviewMemories(), merge: (k, d, hs) => mergeMemories(k, d, hs).then(() => refreshGraph()),
     compress: (ids, text, topic) => compressMemories(ids, text, topic).then(() => refreshGraph()),
     inactive: () => getInactive().then((r) => r.items), entities: () => getEntities().then((r) => r.items), restore: (id) => restoreMemory(id).then(() => refreshGraph()),
-    recallCfg: () => getRecallCfg(), setRecallCfg: (c) => setRecallCfg(c), disputes: () => getDisputes().then((r) => r.items), resolve: (a, b, k) => resolveDispute(a, b, k).then(() => refreshGraph()),
+    clusters: () => getClusters(), recallCfg: () => getRecallCfg(), setRecallCfg: (c) => setRecallCfg(c), disputes: () => getDisputes().then((r) => r.items), resolve: (a, b, k) => resolveDispute(a, b, k).then(() => refreshGraph()),
     sleepInfo: () => getSleep(), sleep: () => runSleep().then((r) => { void refreshGraph(); return r; }),
     build: () => { building = true; syncList(); void buildVectors().then((v) => { vec = v; }, () => {}).finally(() => { building = false; syncList(); void refreshGraph(); }); },
     setEmbedModel: (m) => void saveConn({ embedModel: m }).then(() => { vec = null; return getVectors(); }).then((v) => { vec = v; }, () => {}).finally(syncList) });

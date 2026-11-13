@@ -326,6 +326,7 @@ export function createApp({ root, db, dist = null }) {
       const r = db.compressMemories((Array.isArray(b.ids) ? b.ids : []).map(Number), b.text, String(b.topic ?? "")); if (!r) return json(res, 400, { error: "Нечего сжимать" });
       setTimeout(() => void tick(), 300); return json(res, 200, r);
     }
+    if (pathname === "/api/clusters" && req.method === "GET") return json(res, 200, db.clusters());
     if (pathname === "/api/recall" && req.method === "GET") return json(res, 200, db.getRecallCfg());
     if (pathname === "/api/recall" && req.method === "PUT") { let b; try { b = await body(req, 2048); } catch { return json(res, 400, { error: "Некорректный запрос" }); } db.setRecallCfg({ weights: b.weights && typeof b.weights === "object" ? b.weights : undefined, rerank: typeof b.rerank === "boolean" ? b.rerank : undefined }); return json(res, 200, db.getRecallCfg()); }
     if (pathname === "/api/disputes" && req.method === "GET") return json(res, 200, { items: db.disputes() });

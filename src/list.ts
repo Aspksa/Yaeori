@@ -1,10 +1,10 @@
-import type { ChatInfo, Dispute, Entity, Inactive, RecallCfg, Review, SleepInfo, VecInfo } from "./api";
+import type { ChatInfo, Clusters, Dispute, Entity, Inactive, RecallCfg, Review, SleepInfo, VecInfo } from "./api";
 import type { GraphData } from "./api";
 
-type Tab = "chats" | "memory" | "links";
+type Tab = "chats" | "memory" | "sense" | "links";
 type Filter = "all" | "fresh" | "long" | "fading";
 export interface ListState { chats: ChatInfo[]; brain: GraphData | null; current: number; vec: VecInfo | null; building?: boolean }
-export interface ListHandlers { more(areaId: number): void; openChat(id: number): void; focus(token: string): void; pin(tokens: string[]): void; kinds(k: string[]): void; edit(id: number, patch: { text?: string; topics?: string; pinned?: boolean }): Promise<unknown>; forget(id: number): Promise<unknown>; review(): Promise<Review>; merge(keep: number, drop: number[], history?: boolean): Promise<unknown>; compress(ids: number[], text: string, topic: string): Promise<unknown>; inactive(): Promise<Inactive[]>; entities(): Promise<Entity[]>; restore(id: number): Promise<unknown>; recallCfg(): Promise<RecallCfg>; setRecallCfg(c: { weights?: RecallCfg["weights"]; rerank?: boolean }): Promise<RecallCfg>; disputes(): Promise<Dispute[]>; resolve(a: number, b: number, keep: number | null): Promise<unknown>; sleepInfo(): Promise<{ last: SleepInfo | null; sleeping: boolean }>; sleep(): Promise<SleepInfo>; build(): void; setEmbedModel(m: string): void }
+export interface ListHandlers { more(areaId: number): void; openChat(id: number): void; focus(token: string): void; pin(tokens: string[]): void; kinds(k: string[]): void; edit(id: number, patch: { text?: string; topics?: string; pinned?: boolean }): Promise<unknown>; forget(id: number): Promise<unknown>; review(): Promise<Review>; merge(keep: number, drop: number[], history?: boolean): Promise<unknown>; compress(ids: number[], text: string, topic: string): Promise<unknown>; inactive(): Promise<Inactive[]>; entities(): Promise<Entity[]>; restore(id: number): Promise<unknown>; clusters(): Promise<Clusters>; recallCfg(): Promise<RecallCfg>; setRecallCfg(c: { weights?: RecallCfg["weights"]; rerank?: boolean }): Promise<RecallCfg>; disputes(): Promise<Dispute[]>; resolve(a: number, b: number, keep: number | null): Promise<unknown>; sleepInfo(): Promise<{ last: SleepInfo | null; sleeping: boolean }>; sleep(): Promise<SleepInfo>; build(): void; setEmbedModel(m: string): void }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const DAY = 86400000;
@@ -23,6 +23,7 @@ const FILTERS: [Filter, string][] = [["all", "Все"], ["fresh", "Свежие"
 /** Список слева от карты: беседы по датам и воспоминания по темам. Клик — перелёт камеры к узлу. */
 export function mountList(root: HTMLElement, h: ListHandlers) {
   let tab: Tab = "chats", q = "", filter: Filter = "all", st: ListState = { chats: [], brain: null, current: 0, vec: null };
+  let clu: Clusters | null = null, cluAsked = false, cluStale = false, cluBusy = false; const cluOpen = new Set<number>();
   let cfg: RecallCfg | null = null, cfgAsked = false, cfgNote = "", disp: Dispute[] | null = null, dispAsked = false;
   let slp: { last: SleepInfo | null; sleeping: boolean } | null = null, slpBusy = false, slpAsked = false;
   const closed = new Set<number>(), pages = new Map<number, number>(), relOpen = new Set<number>(); let locked: string | null = null, editing: number | null = null, rev: Review | null = null, revBusy = false, revNote = "", archOpen = false, inact: Inactive[] | null = null, ents: Entity[] | null = null, entLoading = false; const entOpen = new Set<number>(), kindsOn = new Set(["topic", "sense", "chat", "entity", "habit"]);
@@ -75,6 +76,16 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     return `<details class="ls-vec"><summary><b>Как искать</b></summary><small>Что важнее при вспоминании. По умолчанию всё поровну.</small>${sl("vec", "По смыслу")}${sl("lex", "По словам")}${sl("imp", "Важность и свежесть")}
       <label class="ls-ck"><input type="checkbox" data-rr="1"${cfg.rerank ? " checked" : ""} /> Переранжировать моделью (точнее, но каждый ответ чуть дольше)</label><div class="ls-vb"><button type="button" class="ls-btn" data-cfg="1">Сохранить</button>${cfgNote ? `<small>${esc(cfgNote)}</small>` : ""}</div></details>`;
   }
+  function senseHtml() {
+    if (!cluAsked || cluStale) { cluAsked = true; cluStale = false; cluBusy = true; void h.clusters().then((x) => { clu = x; }, () => {}).finally(() => { cluBusy = false; render(); }); }
+    if (!clu) return `<p class="ls-none">${cluBusy ? "Считаю скопления…" : "Скопления не загрузились."}</p>`;
+    const note = `<p class="ls-note">Группы по смыслу, независимо от тем. С вектором ${clu.withVec} из ${clu.total}.${cluBusy ? " Обновляю…" : ""}</p>`;
+    if (!clu.items.length) return note + `<p class="ls-none">Скопления появятся, когда посчитаются векторы (нужно хотя бы 6 воспоминаний с вектором).</p>`;
+    return note + clu.items.map((c) => {
+      const open = cluOpen.has(c.id);
+      return `<section class="ls-g"><button type="button" class="ls-gh" data-cl="${c.id}" aria-expanded="${open}"><b>${esc(c.label)}</b><span>${c.size}</span></button>${open ? `<p class="ls-sum">${c.mix ? "Разные темы: " : "Темы: "}${c.topics.map((t) => `${esc(t.t)} ${t.n}`).join(" · ")}${c.mix ? ". Возможно, их стоит объединить." : ""}</p>${c.top.map((m) => `<div class="ls-mem"><button type="button" class="ls-row" data-clm="${m.id}"><span class="ls-t">${esc(m.text)}</span></button></div>`).join("")}<button type="button" class="ls-more" data-clp="${c.id}">Показать всё скопление на карте (${Math.min(c.size, c.ids.length)})</button>` : ""}</section>`;
+    }).join("");
+  }
   function sleepHtml() {
     if (!slpAsked) { slpAsked = true; void h.sleepInfo().then((x) => { slp = x; render(); }, () => {}); }
     const l = slp?.last, txt = l ? `Последний раз ${ago(l.at)}: слито ${l.merged}, сжато ${l.compressed}, забыто ${l.archived}${l.backup ? `, копия ${esc(l.backup)}` : ""}.` : "Ещё не спала. Сама убирается по ночам.";
@@ -125,14 +136,14 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
   }
   function render() {
     const nm = st.brain?.messages.length ?? 0;
-    tabs.innerHTML = (["chats", "memory", "links"] as Tab[]).map((t) => `<button type="button" role="tab" aria-selected="${t === tab}" data-tab="${t}">${t === "chats" ? "Беседы" : t === "memory" ? "Память" : "Связи"}<em>${t === "chats" ? st.chats.length : t === "memory" ? nm : st.brain?.links.length ?? 0}</em></button>`).join("");
+    tabs.innerHTML = (["chats", "memory", "sense", "links"] as Tab[]).map((t) => `<button type="button" role="tab" aria-selected="${t === tab}" data-tab="${t}">${t === "chats" ? "Беседы" : t === "memory" ? "Память" : t === "sense" ? "Смысл" : "Связи"}<em>${t === "chats" ? st.chats.length : t === "memory" ? nm : t === "sense" ? clu?.items.length ?? "·" : st.brain?.links.length ?? 0}</em></button>`).join("");
     chips.hidden = tab !== "memory";
     root.querySelector(".ls-q")!.toggleAttribute("hidden", false);
     chips.innerHTML = FILTERS.map(([id, t]) => `<button type="button" role="radio" aria-checked="${id === filter}" data-f="${id}">${t}</button>`).join("");
-    const top = body.scrollTop; body.innerHTML = tab === "chats" ? chatsHtml() : tab === "memory" ? memHtml() : linksHtml(); body.scrollTop = top;
+    const top = body.scrollTop; body.innerHTML = tab === "chats" ? chatsHtml() : tab === "memory" ? memHtml() : tab === "sense" ? senseHtml() : linksHtml(); body.scrollTop = top;
   }
   root.addEventListener("click", (e) => {
-    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-cfg],[data-dk-a],[data-dk-b],[data-dk-both],[data-sleep],[data-pg],[data-more],[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area],[data-build],[data-em],[data-rel],[data-pair],[data-kind],[data-pin],[data-edit],[data-cancel],[data-forget],[data-review],[data-mg],[data-skip-mg],[data-keep-a],[data-keep-b],[data-skip-cf],[data-cp],[data-skip-cp],[data-arch],[data-restore],[data-ent]"); if (!t) return;
+    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-cl],[data-clm],[data-clp],[data-cfg],[data-dk-a],[data-dk-b],[data-dk-both],[data-sleep],[data-pg],[data-more],[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area],[data-build],[data-em],[data-rel],[data-pair],[data-kind],[data-pin],[data-edit],[data-cancel],[data-forget],[data-review],[data-mg],[data-skip-mg],[data-keep-a],[data-keep-b],[data-skip-cf],[data-cp],[data-skip-cp],[data-arch],[data-restore],[data-ent]"); if (!t) return;
     const d = t.dataset;
     if (d.review) { revBusy = true; revNote = ""; render(); void h.review().then((r) => { rev = r; }, (e: Error) => { revNote = e.message; }).finally(() => { revBusy = false; render(); }); }
     else if (d.mg) { const g = rev?.merges[Number(d.mg)]; if (g) { rev!.merges.splice(Number(d.mg), 1); void h.merge(g.keep, g.items.filter((i) => i.id !== g.keep).map((i) => i.id)); render(); } }
@@ -152,6 +163,9 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     else if (d.build) h.build();
     else if (d.em) h.setEmbedModel(root.querySelector<HTMLInputElement>(".ls-em")?.value.trim() ?? "");
     else if (d.dkA !== undefined || d.dkB !== undefined || d.dkBoth !== undefined) { const i = Number(d.dkA ?? d.dkB ?? d.dkBoth), x = disp?.[i]; if (x) { disp!.splice(i, 1); void h.resolve(x.a.id, x.b.id, d.dkBoth !== undefined ? null : d.dkA !== undefined ? x.a.id : x.b.id); render(); } }
+    else if (d.cl) { const id = Number(d.cl); if (cluOpen.has(id)) cluOpen.delete(id); else cluOpen.add(id); render(); }
+    else if (d.clm) { const tk = "mem:" + d.clm; h.focus(tk); locked = tk; h.pin([tk]); }
+    else if (d.clp) { const c = clu?.items.find((x) => x.id === Number(d.clp)); if (c) { locked = "cl:" + c.id; h.pin(c.ids.map((i) => "mem:" + i)); h.focus("mem:" + c.ids[0]); } }
     else if (d.cfg) { const w = { vec: 1, lex: 1, imp: 1 }; root.querySelectorAll<HTMLInputElement>("[data-w]").forEach((el) => { w[el.dataset.w as "vec" | "lex" | "imp"] = Number(el.value); }); const rerank = root.querySelector<HTMLInputElement>("[data-rr]")?.checked ?? false; void h.setRecallCfg({ weights: w, rerank }).then((x) => { cfg = x; cfgNote = "Сохранено"; }, () => { cfgNote = "Не удалось сохранить"; }).finally(render); }
     else if (d.sleep) { slpBusy = true; render(); void h.sleep().then((x) => { slp = { last: x, sleeping: false }; }, () => {}).finally(() => { slpBusy = false; render(); }); }
     else if (d.pg) { pages.set(Number(d.pg), (pages.get(Number(d.pg)) ?? 30) + 30); render(); }
@@ -174,5 +188,5 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
   root.addEventListener("mouseout", (e) => { if ((e.target as HTMLElement).closest("[data-mem]") && !locked) h.pin([]); });
   input.addEventListener("input", () => { q = input.value.trim().toLowerCase(); render(); });
   render();
-  return { update(s: ListState) { st = s; ents = null; render(); } };
+  return { update(s: ListState) { st = s; ents = null; cluStale = true; render(); } };
 }
