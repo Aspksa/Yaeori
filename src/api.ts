@@ -22,7 +22,7 @@ export interface ChatInfo { id: number; title: string; createdAt: string; count:
 export interface Msg { id: number; role: "user" | "assistant"; content: string; at: string }
 export interface BrainStats { memories: number; topics: number; links: number; level: number; levelName: string; next: number | null }
 export interface GraphData {
-  mode?: "memory"; stats?: BrainStats; chats: { id: number; title: string; count: number }[];
+  mode?: "memory"; stats?: BrainStats; chats: { id: number; title: string; count: number; hidden?: number; summary?: string }[];
   messages: { id: number; chatId: number; role: "user" | "assistant"; preview: string; size: number; at: string; tier?: string; pinned?: boolean; past?: boolean; hits?: number; src?: number; topics?: string[] }[];
   links: { a: number; b: number; w: number; words: string[]; kinds?: string[] }[];
 }
@@ -35,7 +35,7 @@ export const createChat = () => call<{ id: number }>("/api/chats", { method: "PO
 export const getMessages = (id: number) => call<Msg[]>(`/api/chats/${id}`);
 export const deleteChat = (id: number) => call<{ ok: true }>(`/api/chats/${id}`, { method: "DELETE" });
 export const getGraph = () => call<GraphData>("/api/graph");
-export const getBrain = () => call<GraphData>("/api/brain");
+export const getBrain = (open: string[] = []) => call<GraphData>("/api/brain" + (open.length ? "?open=" + encodeURIComponent(open.join(",")) : ""));
 export const getMemories = () => call<MemoryList>("/api/memories");
 export const forgetMemory = (id: number) => call<{ ok: true }>(`/api/memories/${id}`, { method: "DELETE" });
 export const forgetAll = () => call<{ ok: true }>("/api/memories", { method: "DELETE" });

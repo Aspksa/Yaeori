@@ -273,3 +273,6 @@ button.pill{border:0;font:inherit;font-size:var(--fs-sm);font-weight:600;cursor:
 .ls-card.warn{border-color:var(--warn,#f0a030)}.ls-card p{margin:0;font-size:var(--fs-sm);line-height:1.3}.ls-card p.keep{font-weight:600}.ls-card em{font:normal var(--fs-xs) ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
 .ls-ct{font:600 var(--fs-xs)/1 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .ls-warn{display:block;margin:4px 2px;color:var(--warn,#f0a030);font-size:var(--fs-xs)}
+.ls-sum { margin: 2px 0 6px; padding: 0 10px; font-size: 12px; line-height: 1.45; color: var(--muted, #9a9aa5); }
+.ls-more { display: block; width: calc(100% - 20px); margin: 6px 10px 10px; padding: 7px 10px; border: 1px dashed currentColor; border-radius: 8px; background: none; color: inherit; font: inherit; font-size: 12px; opacity: .7; cursor: pointer; }
+.ls-more:hover, .ls-more:focus-visible { opacity: 1; }

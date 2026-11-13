@@ -4,7 +4,7 @@ import type { GraphData } from "./api";
 type Tab = "chats" | "memory" | "links";
 type Filter = "all" | "fresh" | "long" | "fading";
 export interface ListState { chats: ChatInfo[]; brain: GraphData | null; current: number; vec: VecInfo | null; building?: boolean }
-export interface ListHandlers { openChat(id: number): void; focus(token: string): void; pin(tokens: string[]): void; kinds(k: string[]): void; edit(id: number, patch: { text?: string; topics?: string; pinned?: boolean }): Promise<unknown>; forget(id: number): Promise<unknown>; review(): Promise<Review>; merge(keep: number, drop: number[], history?: boolean): Promise<unknown>; compress(ids: number[], text: string, topic: string): Promise<unknown>; inactive(): Promise<Inactive[]>; entities(): Promise<Entity[]>; restore(id: number): Promise<unknown>; build(): void; setEmbedModel(m: string): void }
+export interface ListHandlers { more(areaId: number): void; openChat(id: number): void; focus(token: string): void; pin(tokens: string[]): void; kinds(k: string[]): void; edit(id: number, patch: { text?: string; topics?: string; pinned?: boolean }): Promise<unknown>; forget(id: number): Promise<unknown>; review(): Promise<Review>; merge(keep: number, drop: number[], history?: boolean): Promise<unknown>; compress(ids: number[], text: string, topic: string): Promise<unknown>; inactive(): Promise<Inactive[]>; entities(): Promise<Entity[]>; restore(id: number): Promise<unknown>; build(): void; setEmbedModel(m: string): void }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const DAY = 86400000;
@@ -23,7 +23,7 @@ const FILTERS: [Filter, string][] = [["all", "Все"], ["fresh", "Свежие"
 /** Список слева от карты: беседы по датам и воспоминания по темам. Клик — перелёт камеры к узлу. */
 export function mountList(root: HTMLElement, h: ListHandlers) {
   let tab: Tab = "chats", q = "", filter: Filter = "all", st: ListState = { chats: [], brain: null, current: 0, vec: null };
-  const closed = new Set<number>(), relOpen = new Set<number>(); let locked: string | null = null, editing: number | null = null, rev: Review | null = null, revBusy = false, revNote = "", archOpen = false, inact: Inactive[] | null = null, ents: Entity[] | null = null, entLoading = false; const entOpen = new Set<number>(), kindsOn = new Set(["topic", "sense", "chat", "entity"]);
+  const closed = new Set<number>(), pages = new Map<number, number>(), relOpen = new Set<number>(); let locked: string | null = null, editing: number | null = null, rev: Review | null = null, revBusy = false, revNote = "", archOpen = false, inact: Inactive[] | null = null, ents: Entity[] | null = null, entLoading = false; const entOpen = new Set<number>(), kindsOn = new Set(["topic", "sense", "chat", "entity"]);
   root.innerHTML = `<div class="ls-top"><div class="ls-tabs" role="tablist" aria-label="Что показывать в списке"></div>
     <input class="ls-q" type="search" placeholder="Найти…" autocomplete="off" spellcheck="false" aria-label="Поиск по списку" /><div class="ls-chips" role="radiogroup" aria-label="Фильтр памяти" hidden></div></div>
     <div class="ls-body" tabindex="-1"></div>`;
@@ -92,14 +92,15 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     if (!by.size) return strip + `<p class="ls-none">Ничего не найдено.</p>`;
     const groups = [...by].sort((a, c) => c[1].length - a[1].length);
     return strip + groups.map(([id, ms]) => {
-      const open = q || filter !== "all" || !closed.has(id);
-      const items = ms.sort((x, y) => (y.hits ?? 1) - (x.hits ?? 1) || Date.parse(y.at) - Date.parse(x.at)).map((m) => {
+      const open = q || filter !== "all" || !closed.has(id), lim = q || filter !== "all" ? ms.length : pages.get(id) ?? 30, meta = b.chats.find((c) => c.id === id);
+      const items = ms.sort((x, y) => (y.hits ?? 1) - (x.hits ?? 1) || Date.parse(y.at) - Date.parse(x.at)).slice(0, lim).map((m) => {
         const [dot, label] = TIER[m.tier ?? "plain"]!;
         const rel = linksOf(m.id), open2 = relOpen.has(m.id);
         if (editing === m.id) return `<form class="ls-edit" data-form="${m.id}"><textarea rows="3" maxlength="200" aria-label="Текст воспоминания" required>${esc(m.preview)}</textarea><input type="text" value="${esc((m.topics ?? []).join(", "))}" placeholder="темы через запятую" aria-label="Темы" required /><div class="ls-eb"><button type="submit" class="ls-btn">Сохранить</button><button type="button" class="ls-btn" data-cancel="1">Отмена</button><button type="button" class="ls-btn bad" data-forget="${m.id}">Забыть</button></div></form>`;
         return `<div class="ls-mem${locked === "mem:" + m.id ? " lock" : ""}"><button type="button" class="ls-row" data-mem="${m.id}" title="${label}"><i class="dot ${dot}"></i><span class="ls-t">${m.pinned ? "📌 " : ""}${esc(m.preview)}</span><span class="ls-m">×${m.hits ?? 1} · ${ago(m.at)}</span></button><span class="ls-acts"><button type="button" class="ls-go${m.pinned ? " on" : ""}" data-pin="${m.id}" aria-pressed="${Boolean(m.pinned)}" aria-label="${m.pinned ? "Открепить" : "Закрепить, чтобы не забывалось"}" title="${m.pinned ? "Открепить" : "Закрепить: не забывается"}">📌</button><button type="button" class="ls-go" data-edit="${m.id}" aria-label="Править воспоминание" title="Править">✎</button>${m.src ? `<button type="button" class="ls-go" data-src="${m.src}" aria-label="Открыть беседу, из которой пришло воспоминание" title="Открыть беседу">↗</button>` : ""}</span>${rel.length ? `<button type="button" class="ls-rel" data-rel="${m.id}" aria-expanded="${open2}">⟷ связи ${rel.length}</button>` : ""}${open2 ? `<div class="ls-sub">${rel.slice(0, 6).map((l) => { const o = l.a === m.id ? l.b : l.a; return `<button type="button" class="ls-sr" data-mem="${o}"><span>${esc(textOf(o))}</span><em>${why(l.words)}</em></button>`; }).join("")}</div>` : ""}</div>`;
       }).join("");
-      return `<section class="ls-g"><button type="button" class="ls-gh" data-area="${id}" aria-expanded="${open}"><b>${esc(areas.get(id) ?? "—")}</b><span>${ms.length}</span></button>${open ? items : ""}</section>`;
+      const more = ms.length > lim ? `<button type="button" class="ls-more" data-pg="${id}">Показать ещё ${Math.min(30, ms.length - lim)}</button>` : meta?.hidden ? `<button type="button" class="ls-more" data-more="${id}">Загрузить ещё ${Math.min(meta.hidden, 150)} из памяти</button>` : "";
+      return `<section class="ls-g"><button type="button" class="ls-gh" data-area="${id}" aria-expanded="${open}"><b>${esc(areas.get(id) ?? "—")}</b><span>${meta?.count ?? ms.length}</span></button>${open && meta?.summary ? `<p class="ls-sum">${esc(meta.summary)}</p>` : ""}${open ? items + more : ""}</section>`;
     }).join("");
   }
   function render() {
@@ -111,7 +112,7 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     const top = body.scrollTop; body.innerHTML = tab === "chats" ? chatsHtml() : tab === "memory" ? memHtml() : linksHtml(); body.scrollTop = top;
   }
   root.addEventListener("click", (e) => {
-    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area],[data-build],[data-em],[data-rel],[data-pair],[data-kind],[data-pin],[data-edit],[data-cancel],[data-forget],[data-review],[data-mg],[data-skip-mg],[data-keep-a],[data-keep-b],[data-skip-cf],[data-cp],[data-skip-cp],[data-arch],[data-restore],[data-ent]"); if (!t) return;
+    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-pg],[data-more],[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area],[data-build],[data-em],[data-rel],[data-pair],[data-kind],[data-pin],[data-edit],[data-cancel],[data-forget],[data-review],[data-mg],[data-skip-mg],[data-keep-a],[data-keep-b],[data-skip-cf],[data-cp],[data-skip-cp],[data-arch],[data-restore],[data-ent]"); if (!t) return;
     const d = t.dataset;
     if (d.review) { revBusy = true; revNote = ""; render(); void h.review().then((r) => { rev = r; }, (e: Error) => { revNote = e.message; }).finally(() => { revBusy = false; render(); }); }
     else if (d.mg) { const g = rev?.merges[Number(d.mg)]; if (g) { rev!.merges.splice(Number(d.mg), 1); void h.merge(g.keep, g.items.filter((i) => i.id !== g.keep).map((i) => i.id)); render(); } }
@@ -130,6 +131,8 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     else if (d.kind) { if (kindsOn.has(d.kind)) kindsOn.delete(d.kind); else kindsOn.add(d.kind); h.kinds([...kindsOn]); render(); }
     else if (d.build) h.build();
     else if (d.em) h.setEmbedModel(root.querySelector<HTMLInputElement>(".ls-em")?.value.trim() ?? "");
+    else if (d.pg) { pages.set(Number(d.pg), (pages.get(Number(d.pg)) ?? 30) + 30); render(); }
+    else if (d.more) { h.more(Number(d.more)); }
     else if (d.tab) { tab = d.tab as Tab; render(); }
     else if (d.f) { filter = d.f as Filter; render(); }
     else if (d.chat) { h.openChat(Number(d.chat)); h.focus("chat:" + d.chat); }
