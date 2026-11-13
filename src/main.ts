@@ -39,6 +39,10 @@ document.addEventListener("click", (e) => {
   const dest = t.dataset.nav ?? t.dataset.go;
   if (dest) go(dest as PageId); else { menuOpen = !menuOpen; document.querySelector(".shell")?.classList.toggle("open", menuOpen); }
 });
+window.addEventListener("yaeori:goto", (e) => {
+  const d = (e as CustomEvent<{ page: PageId; section?: string }>).detail; go(d.page);
+  if (d.section) setTimeout(() => document.getElementById("set-" + d.section)?.scrollIntoView({ block: "start" }), 250);
+});
 document.addEventListener("keydown", (e) => {
   if (!e.altKey || e.ctrlKey || e.metaKey) return;
   if (e.key === "1") { e.preventDefault(); go("home"); } else if (e.key === "2") { e.preventDefault(); go("settings"); }
