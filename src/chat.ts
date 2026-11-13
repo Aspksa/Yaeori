@@ -1,17 +1,11 @@
 import { createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
 import { mountList } from "./list";
+import { esc as mdEsc, renderText } from "./md";
+export { renderText };
 import { buildVectors, forgetMemory, getVectors, mergeMemories, reviewMemories, saveConn, updateMemory, type VecInfo } from "./api";
 import { AREA_OFF, DEFAULT_MAP, NEURON_OFF, MAP_THEMES, mountGraph, type GraphHandle, type Grouping, type Layout, type MapOptions, type MapTheme, type SysItem } from "./graph";
 
-const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
-/** Минимальная разметка: блоки кода, `код`, **жирный**, переносы строк. Всё остальное экранируется. */
-export function renderText(src: string): string {
-  const parts = src.split(/```/);
-  return parts.map((p, i) => {
-    if (i % 2) { const nl = p.indexOf("\n"); return `<pre><code>${esc(nl >= 0 && /^[\w+-]*$/.test(p.slice(0, nl).trim()) ? p.slice(nl + 1) : p)}</code></pre>`; }
-    return esc(p).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
-  }).join("");
-}
+const esc = mdEsc;
 
 const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v3";
 const LAYOUTS: [Layout, string][] = [["sectors", "Сектора"], ["rings", "Кольца"], ["circle", "Круг"], ["hex", "Соты"], ["tile", "Плита"], ["hud", "HUD"], ["force", "Сила"]];
@@ -196,8 +190,15 @@ export function mountHome(): () => void {
     if (thread.querySelector(".msg.assistant:only-child")) thread.innerHTML = "";
     bubble("user", renderText(text));
     const out = bubble("assistant", '<span class="typing" aria-label="Печатает"><i></i><i></i><i></i></span>');
-    let acc = "", frame = 0, failed = false;
-    const paint = () => { frame = 0; out.innerHTML = renderText(acc); thread.scrollTop = thread.scrollHeight; };
+    // Плавный вывод: на экран идёт не весь накопленный текст сразу, а растущий «хвост» — скорость зависит от отставания.
+    let acc = "", shown = 0, frame = 0, failed = false;
+    const paint = () => {
+      frame = 0;
+      const back = acc.length - shown; if (back > 0) shown += Math.min(back, Math.max(1, Math.ceil(back / 14)));
+      out.innerHTML = renderText(acc.slice(0, shown), shown < acc.length || !finished); thread.scrollTop = thread.scrollHeight;
+      if (shown < acc.length) frame = requestAnimationFrame(paint);
+    };
+    let finished = false;
     const my = new AbortController(); ctrl = my; setBusy(true);
     let answered = false; graph.flow(["chat:" + id, "core"], "user"); graph.think(true);
     try {
@@ -211,7 +212,7 @@ export function mountHome(): () => void {
         if (e.delta) { if (!answered) { answered = true; graph.think(false); graph.flow(["core", "chat:" + id], "bot"); } acc += e.delta; if (!frame) frame = requestAnimationFrame(paint); }
         if (e.notice) { const n = document.createElement("div"); n.className = "msg notice"; n.textContent = e.notice; thread.insertBefore(n, out); }
         if (e.error) { graph.think(false); failed = true; out.className = "msg error"; out.innerHTML = errorHtml(e); }
-        if (e.done) { if (frame) { cancelAnimationFrame(frame); frame = 0; } paint(); if (ctrl === my) setBusy(false); }
+        if (e.done) { finished = true; if (frame) { cancelAnimationFrame(frame); frame = 0; } shown = acc.length; paint(); if (ctrl === my) setBusy(false); }
         if (e.brain) {
           const b = e.brain, n = document.createElement("div"); n.className = "msg notice";
           if (b.error) n.textContent = `Память не обновилась: ${b.error.error ?? "ошибка"}`; else if (b.added || b.strengthened) n.textContent = `Мозг: запомнила ${b.added ?? 0}, закрепила ${b.strengthened ?? 0}`;
@@ -224,6 +225,7 @@ export function mountHome(): () => void {
       }, my.signal);
     } catch (e) { if ((e as Error).name !== "AbortError") { failed = true; out.className = "msg error"; out.innerHTML = errorHtml({ error: (e as Error).message }); } }
     graph.think(false); if (frame) cancelAnimationFrame(frame);
+    finished = true; shown = acc.length;
     if (!failed) paint(); else if (!acc) { /* сообщение об ошибке уже в пузыре */ }
     if (ctrl === my) { ctrl = null; if (!dead) setBusy(false); } if (!dead) { void refreshChats(); void refreshGraph(); }
   }

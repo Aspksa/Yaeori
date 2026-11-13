@@ -129,6 +129,7 @@ code{padding:2px 8px;border-radius:var(--r-sm);background:var(--surface-2)}
 .msg.notice{align-self:center;max-width:100%;padding:4px 10px;font-size:var(--fs-sm);color:var(--muted);background:transparent;border:1px dashed var(--line)}
 .msg.error strong{display:block}.err-hint{display:block;margin-top:4px;color:var(--fg)}.err-detail{display:block;margin-top:4px;color:var(--muted);font-family:ui-monospace,Consolas,monospace;overflow-wrap:anywhere}.err-go{margin-top:8px}
 .msg.error{align-self:stretch;max-width:100%;background:color-mix(in srgb,var(--danger) 12%,var(--surface));color:var(--danger)}
+.msg p{margin:0}.msg p+p,.msg p+ul,.msg p+ol,.msg ul+p,.msg ol+p{margin-top:6px}.msg ul,.msg ol{margin:4px 0;padding-left:20px}.msg h3,.msg h4,.msg h5,.msg h6{margin:8px 0 2px;font-size:var(--fs-md)}.msg a{color:inherit;text-decoration:underline}.msg em{font-style:italic}
 .msg pre{margin:6px 0;padding:10px;border-radius:var(--r-md);background:#0e0e11;color:#ececf1;overflow:auto;font-size:var(--fs-sm)}
 .msg pre code,.msg.user code{background:transparent;padding:0}
 .typing{display:inline-flex;gap:4px;padding:4px 0}.typing i{width:6px;height:6px;border-radius:50%;background:var(--muted);animation:blink 1s infinite}
