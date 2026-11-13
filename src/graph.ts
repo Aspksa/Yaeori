@@ -13,7 +13,7 @@ export const MAP_THEMES: { id: MapTheme; label: string; swatch: string[] }[] = [
   { id: "bordo", label: "Бордо", swatch: ["#f0a35c", "#e05a6b", "#d9c27a", "#c97bb0"] },
   { id: "paper", label: "Бумага", swatch: ["#8a5a1c", "#2f6f8f", "#6b3fa0", "#2f7f4f"] },
 ];
-export interface SysItem { id: string; label: string; detail: string; ok: boolean; icon: "key" | "spark" | "db" | "chat" | "palette" }
+export interface SysItem { id: string; label: string; detail: string; ok: boolean; icon: "key" | "spark" | "db" | "chat" | "palette"; group?: "chat"; chatId?: number; on?: boolean }
 
 interface Pal { bg: string; hubs: string[]; user: string; bot: string; line: string; text: string; muted: string; warn: string }
 const FIXED: Record<Exclude<MapTheme, "accent">, Pal> = {
@@ -140,13 +140,32 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   }
 
   const msgsOf = (grp: string) => order.filter((n) => n.kind === "msg" && n.grp === grp);
-  const radius = (n: N) => o.layout === "sectors" && n.kind === "msg" ? (neu(n) ? 1.5 + Math.min(n.hits ?? 1, 10) * 0.12 : 1.5) * dotK * o.size * (n.key2 ? 1.7 : 1) : o.layout === "sectors" && n.kind === "hub" ? 3 * dotK * o.size : n.kind === "msg" && neu(n) ? (4.2 + Math.min(n.hits ?? 1, 12) * 0.75) * o.size * (n.key2 ? 1.2 : 1) : n.kind === "core" ? 26 : n.kind === "sys" ? 14 : n.kind === "hub" ? (8 + Math.sqrt(n.size) * 0.9) * o.size : (n.key2 ? 4.6 : 2.7 + Math.min(Math.log10(n.size + 1), 3) * 0.5) * o.size;
+  const radius = (n: N) => o.layout === "sectors" && n.kind === "msg" ? (neu(n) ? 1.5 + Math.min(n.hits ?? 1, 10) * 0.12 : 1.5) * dotK * o.size * (n.key2 ? 1.7 : 1) : o.layout === "sectors" && n.kind === "hub" ? 3 * dotK * o.size : n.kind === "msg" && neu(n) ? (4.2 + Math.min(n.hits ?? 1, 12) * 0.75) * o.size * (n.key2 ? 1.2 : 1) : n.kind === "core" ? 26 : n.kind === "sys" ? (n.sys?.group === "chat" ? 8.5 : 14) : n.kind === "hub" ? (8 + Math.sqrt(n.size) * 0.9) * o.size : (n.key2 ? 4.6 : 2.7 + Math.min(Math.log10(n.size + 1), 3) * 0.5) * o.size;
 
   let sectors: { a0: number; a1: number; hue: number }[] = [], slots: { x: number; y: number; hue: number }[] = [], dotK = 1;
-  function targets() {
+  function targets() { layoutTargets(); if (o.layout !== "force") placeChips(); }
+  function placeChips() {
+    const chips = order.filter((n) => n.kind === "sys" && n.sys?.group === "chat"); if (!chips.length) return;
+    const best = new Map<number, Map<number, number>>();
+    for (const m of data.messages) if (m.src && m.tier !== undefined) { const c = best.get(m.src) ?? new Map<number, number>(); c.set(m.chatId, (c.get(m.chatId) ?? 0) + 1); best.set(m.src, c); }
+    const byHub = new Map<string, N[]>();
+    for (const ch of chips) {
+      const cid = ch.sys!.chatId ?? 0, c = best.get(cid); let key = "hc" + cid, top = 0;
+      if (c) for (const [a, k] of c) if (k > top && nodes.has("hc" + a)) { top = k; key = "hc" + a; }
+      if (!nodes.has(key)) key = order.find((n) => n.kind === "hub")?.key ?? "";
+      ch.grp = key; (byHub.get(key) ?? byHub.set(key, []).get(key)!).push(ch);
+    }
+    const pitch = 21, per = 7;
+    for (const [key, list] of byHub) {
+      const hb = nodes.get(key), base = hb ? Math.atan2(hb.ty, hb.tx) : 1.5708;
+      list.forEach((ch, i) => { const row = Math.floor(i / per), col = i % per, n = Math.min(per, list.length - row * per), rr = R * 1.2 + row * pitch, aa = base + (col - (n - 1) / 2) * (pitch / rr) * (row % 2 ? 1 : 1); ch.tx = Math.cos(aa) * rr; ch.ty = Math.sin(aa) * rr; });
+    }
+  }
+  function layoutTargets() {
     const hubs = order.filter((n) => n.kind === "hub"), collapsed = new Set(o.collapsed);
     for (const n of order) n.visible = n.kind !== "msg" || !collapsed.has("h" + n.grp);
-    const sys = order.filter((n) => n.kind === "sys");
+    const allSys = order.filter((n) => n.kind === "sys"), sys = allSys.filter((n) => n.sys?.group !== "chat"), chips = allSys.filter((n) => n.sys?.group === "chat");
+    if (o.layout === "force") chips.forEach((sn, i) => { const a = (i / Math.max(chips.length, 1)) * TAU + rot, rr = R * 1.22; sn.tx = Math.cos(a) * rr; sn.ty = Math.sin(a) * rr; sn.x = sn.tx; sn.y = sn.ty; });
     sys.forEach((sn, i) => { const a = (i / Math.max(sys.length, 1)) * TAU - 1.5708 - rot * 0.6, rr = R * 1.08; sn.tx = Math.cos(a) * rr; sn.ty = Math.sin(a) * rr; if (o.layout === "force") { sn.x = sn.tx; sn.y = sn.ty; } });
     if (o.layout === "force") return;
     const core = nodes.get("core")!;
@@ -377,9 +396,10 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       const age = n.born ? (now - n.born) / 900 : 1;
       if (age < 1) { ctx.globalAlpha = 1 - age; ctx.strokeStyle = pal.user; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, r + age * 24, 0, TAU); ctx.stroke(); }
       if (n.kind === "sys") {
-        const s = n.sys!, col = s.ok ? pal.hubs[0]! : pal.warn;
+        const s = n.sys!, hb0 = s.group === "chat" ? nodes.get(n.grp) : null, col = hb0 ? hue(hb0) : s.ok ? pal.hubs[0]! : pal.warn;
+        if (hb0 && hb0.visible) { const q = toScreen(hb0.x, hb0.y); ctx.strokeStyle = col; ctx.globalAlpha = s.on || n === hover ? 0.7 : 0.12; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(q.x, q.y); ctx.lineTo(p.x, p.y); ctx.stroke(); }
         ctx.globalAlpha = dim; ctx.fillStyle = pal.bg; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill();
-        ctx.strokeStyle = col; ctx.lineWidth = n === hover ? 2.2 : 1.4; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.stroke();
+        ctx.strokeStyle = col; ctx.lineWidth = n === hover || n.sys!.on ? 2.4 : 1.4; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.stroke();
         ctx.save(); ctx.translate(p.x - r * 0.55, p.y - r * 0.55); ctx.scale((r * 1.1) / 24, (r * 1.1) / 24); ctx.strokeStyle = col; ctx.lineWidth = 2 / ((r * 1.1) / 24) * 0.9; ctx.stroke(PATHS[s.icon]); ctx.restore();
         ctx.globalAlpha = 1; continue;
       }

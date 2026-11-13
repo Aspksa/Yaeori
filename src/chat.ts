@@ -69,7 +69,7 @@ export function mountHome(): () => void {
   let chats: ChatInfo[] = [], current = 0, busy = false, ctrl: AbortController | null = null, dead = false;
   let map = loadMap();
   const graph: GraphHandle = mountGraph($<HTMLCanvasElement>("graph"), $("graph-tip"), { onPick: (id) => void open(id), onCollapse: (ids) => { map = { ...map, collapsed: ids }; saveMap(map); },
-    onSystem: (id) => { if (id === "key" || id === "model" || id === "db") window.dispatchEvent(new CustomEvent("yaeori:goto", { detail: { page: "settings", section: id === "key" ? "conn" : id === "model" ? "model" : "memory" } })); else if (id === "palette") { panel.hidden = false; $("viz-toggle").setAttribute("aria-expanded", "true"); } },
+    onSystem: (id) => { if (id.startsWith("chat:")) { void open(Number(id.slice(5))); graph.focus("chat:" + id.slice(5)); return; } if (id === "key" || id === "model" || id === "db") window.dispatchEvent(new CustomEvent("yaeori:goto", { detail: { page: "settings", section: id === "key" ? "conn" : id === "model" ? "model" : "memory" } })); else if (id === "palette") { panel.hidden = false; $("viz-toggle").setAttribute("aria-expanded", "true"); } },
     onShowEnd: () => { $("viz-show").setAttribute("aria-pressed", "false"); $("viz-show").textContent = "▷ Показ"; } }, map);
   const panel = $("viz-panel");
   let lastBrain: GraphData | null = null;
@@ -144,7 +144,8 @@ export function mountHome(): () => void {
         { id: "model", label: "Модель", detail: c?.model || "не выбрана", ok: !!c?.model, icon: "spark" },
         { id: "db", label: "Память", detail: c?.memory === false ? "выключена" : `${nn} воспомин., ${chatMsgs} сообщ.`, ok: c?.memory !== false, icon: "db" },
         { id: "chats", label: "Чаты", detail: String(chats.length), ok: true, icon: "chat" },
-        { id: "palette", label: "Тема карты", detail: theme, ok: true, icon: "palette" }];
+        { id: "palette", label: "Тема карты", detail: theme, ok: true, icon: "palette" },
+        ...chats.slice(0, 60).map((x): SysItem => ({ id: "chat:" + x.id, label: x.title, detail: `${x.count} сообщ.`, ok: true, icon: "chat", group: "chat", chatId: x.id, on: x.id === current }))];
       graph.setSystem(sys);
     } catch { /* карта необязательна */ }
   }
