@@ -15,6 +15,8 @@ export const MAP_THEMES: { id: MapTheme; label: string; swatch: string[] }[] = [
 ];
 export interface SysItem { id: string; label: string; detail: string; ok: boolean; icon: "key" | "spark" | "db" | "chat" | "palette"; group?: "chat"; chatId?: number; on?: boolean }
 
+export type Col = "user" | "bot" | "accent" | "gold" | "mint";
+export interface EntityInfo { id: number; name: string; memories: number[] }
 interface Pal { bg: string; hubs: string[]; user: string; bot: string; line: string; text: string; muted: string; warn: string }
 const FIXED: Record<Exclude<MapTheme, "accent">, Pal> = {
   night: { bg: "#07121d", hubs: ["#4fd1b0", "#f0a24a", "#8b7cf6", "#5aa0ff", "#7fe0c8", "#e8836a", "#b9a8ff", "#93c5fd"], user: "#4fd1b0", bot: "#8b7cf6", line: "rgba(110,190,200,.20)", text: "#d6ece8", muted: "#6f93a0", warn: "#f0a24a" },
@@ -48,12 +50,12 @@ export interface GraphHandle {
   setOptions(p: Partial<MapOptions>): void; options(): MapOptions; setSystem(items: SysItem[]): void;
   expandAll(): void; collapseAll(): void; recenter(): void; search(q: string): void; png(): Promise<Blob | null>; show(on: boolean): boolean;
   /** Импульс по цепочке узлов: "core", "chat:ID", "mem:ID" (через свою тему). col: кто посылает. */
-  flow(path: string[], col: "user" | "bot" | "accent", delay?: number): void; flash(tokens: string[], col: "user" | "bot" | "accent"): void; think(on: boolean): void; focus(token: string): void; pin(tokens: string[]): void; setLinkKinds(kinds: string[]): void;
+  flow(path: string[], col: Col, delay?: number): void; flash(tokens: string[], col: Col): void; think(on: boolean): void; focus(token: string): void; pin(tokens: string[]): void; setLinkKinds(kinds: string[]): void; setEntities(list: EntityInfo[]): void;
 }
-interface Callbacks { onPick: (chatId: number) => void; onCollapse?: (keys: string[]) => void; onSystem?: (id: string) => void; onShowEnd?: () => void }
+interface Callbacks { onPick: (chatId: number) => void; onCollapse?: (keys: string[]) => void; onSystem?: (id: string) => void; onEntity?: (id: number | null) => void; onShowEnd?: () => void }
 
 export const AREA_OFF = 1_000_000, NEURON_OFF = 1_000_000_000;
-const R = 300, MONO = "ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace", TAU = Math.PI * 2;
+const R = 300, MONO = "ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace", SANS = "Inter,system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif", TAU = Math.PI * 2;
 const hexCell = (i: number): [number, number] => {
   const r1: [number, number][] = [[1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1], [1, -1]];
   if (i === 0) return [0, 0];
@@ -81,11 +83,11 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   let drag: { sx: number; sy: number; cx: number; cy: number; moved: boolean } | null = null, pal = palette(o.theme), palAt = 0;
   let tour: { on: boolean; i: number; at: number } = { on: false, i: -1, at: 0 };
   const seen = new Set<number>();
-  interface Fx { keys: string[]; t0: number; dur: number; col: "user" | "bot" | "accent"; reached: number }
+  interface Fx { keys: string[]; t0: number; dur: number; col: Col; reached: number }
   let linkKinds = new Set(["topic", "sense", "chat", "entity"]);
   let pin: Set<string> | null = null; const pinNb = new Set<string>();
   let camGoal: { x: number; y: number; k: number } | null = null;
-  const fxs: Fx[] = [], rings: { key: string; t0: number; col: "user" | "bot" | "accent" }[] = []; let thinking = false, lastThink = 0;
+  const fxs: Fx[] = [], rings: { key: string; t0: number; col: Col; burst?: boolean }[] = []; let ents: EntityInfo[] = [], entSel: number | null = null, entHover: number | null = null; let thinking = false, lastThink = 0;
   const resolve = (tokens: string[]) => tokens.flatMap((t) => {
     if (t === "core") return ["core"];
     if (t.startsWith("chat:")) return nodes.has("hc" + t.slice(5)) ? ["hc" + t.slice(5)] : [];
@@ -97,7 +99,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   const fitK = () => Math.min(w, h) / (R * 2.5);
   const fit = () => { cam = { x: 0, y: 0, k: fitK() }; };
   const resize = () => {
-    const r = canvas.getBoundingClientRect(); dpr = Math.min(devicePixelRatio || 1, 2);
+    const r = canvas.getBoundingClientRect(); dpr = Math.min(devicePixelRatio || 1, 3);
     w = Math.max(1, r.width); h = Math.max(1, r.height); canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
     if (!fitted && r.width > 10) { fit(); fitted = true; }
   };
@@ -288,7 +290,10 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     const hubs = order.filter((n) => n.kind === "hub"), core = nodes.get("core")!, hue = (n: N) => pal.hubs[n.hue % pal.hubs.length]!, byKey = nodes;
     // фон: едва заметная сетка из шестиугольников
     const hs = 46 * cam.k;
-    if (hs > 12) {
+    if (o.layout === "sectors") { // спокойный фон: мягкое свечение у центра вместо сетки
+      if (/^#[0-9a-f]{6}$/i.test(pal.hubs[0]!)) { const cc = toScreen(core.x, core.y), gg = ctx.createRadialGradient(cc.x, cc.y, 0, cc.x, cc.y, R * 1.15 * cam.k); gg.addColorStop(0, pal.hubs[0]! + "26"); gg.addColorStop(0.6, pal.hubs[0]! + "0d"); gg.addColorStop(1, pal.hubs[0]! + "00");
+      ctx.fillStyle = gg; ctx.fillRect(0, 0, w, h); }
+    } else if (hs > 12) {
       ctx.strokeStyle = pal.line; ctx.globalAlpha = 0.25; ctx.lineWidth = 1; ctx.beginPath();
       const hw = hs * Math.sqrt(3), ox = (w / 2 - cam.x * cam.k) % hw, oy = (h / 2 - cam.y * cam.k) % (hs * 1.5);
       for (let row = -2, y = oy - hs * 3; y < h + hs; row++, y += hs * 1.5) for (let x = ox - hw * 2 + (row % 2 ? hw / 2 : 0); x < w + hw; x += hw) {
@@ -299,7 +304,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     // круги-ориентиры
     const c0 = toScreen(core.x, core.y);
     ctx.strokeStyle = pal.line; ctx.lineWidth = 1;
-    for (const rr of [R * 0.28, R * 0.58, R * 0.85, R * 1.08]) { ctx.globalAlpha = rr === R * 1.08 ? 0.9 : 0.55; ctx.beginPath(); ctx.arc(c0.x, c0.y, rr * cam.k, 0, TAU); ctx.stroke(); }
+    for (const rr of [R * 0.28, R * 0.58, R * 0.85, R * 1.08]) { ctx.globalAlpha = o.layout === "sectors" ? (rr === R * 1.08 ? 0.5 : 0.22) : rr === R * 1.08 ? 0.9 : 0.55; ctx.beginPath(); ctx.arc(c0.x, c0.y, rr * cam.k, 0, TAU); ctx.stroke(); }
     ctx.globalAlpha = 1;
     if (o.layout === "sectors") { // свободные ячейки секторов: растут и заполняются
       const sr = Math.max(0.9, 1.35 * dotK * cam.k);
@@ -353,8 +358,8 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     // связи: центр → отделы
     for (const hb of hubs) {
       const p = toScreen(hb.x, hb.y), on = hb.chatId === selected || hl === hb.grp;
-      const g = ctx.createLinearGradient(c0.x, c0.y, p.x, p.y); g.addColorStop(0, pal.line); g.addColorStop(1, on ? hue(hb) : pal.line);
-      ctx.strokeStyle = g; ctx.globalAlpha = on ? 0.95 : 0.8; ctx.lineWidth = on ? 1.6 : 1; ctx.beginPath(); ctx.moveTo(c0.x, c0.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+      const g = ctx.createLinearGradient(c0.x, c0.y, p.x, p.y); g.addColorStop(0, "transparent"); g.addColorStop(0.35, pal.line); g.addColorStop(1, on ? hue(hb) : pal.line);
+      ctx.strokeStyle = g; ctx.globalAlpha = on ? 0.95 : o.layout === "sectors" ? 0.5 : 0.8; ctx.lineWidth = on ? 1.6 : 1; ctx.beginPath(); ctx.moveTo(c0.x, c0.y); ctx.lineTo(p.x, p.y); ctx.stroke();
     }
     // лучи: отдел → сообщения (затухают с расстоянием)
     for (const m of order) {
@@ -369,7 +374,8 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     if (o.group === "chat" && o.links) for (const m of order) {
       if (m.kind !== "msg" || !m.visible || !neu(m) || !m.src) continue;
       const hb = byKey.get("hc" + m.src); if (!hb || !hb.visible) continue;
-      const pa = toScreen(hb.x, hb.y), pb = toScreen(m.x, m.y), on = hover === m || hover === hb;
+      const pa = toScreen(hb.x, hb.y), pb = toScreen(m.x, m.y), on = hover === m || hover === hb || (pin !== null && pin.has(m.key));
+      if (o.layout === "sectors" && !on) continue;
       ctx.setLineDash([3, 4]); ctx.strokeStyle = on ? pal.text : pal.muted; ctx.globalAlpha = (on ? 0.8 : 0.1) * dimOf(m); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke(); ctx.setLineDash([]);
     }
     // связи между чатами: общие слова
@@ -391,6 +397,16 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     ctx.fillStyle = pal.bg; ctx.beginPath(); ctx.arc(c0.x, c0.y, cr, 0, TAU); ctx.fill(); ctx.stroke();
     ctx.strokeStyle = pal.text; ctx.lineWidth = Math.max(1.2, 1.6 * cam.k); ctx.beginPath(); ctx.arc(c0.x - cr * 0.16, c0.y + cr * 0.06, cr * 0.42, 0, TAU); ctx.stroke(); ctx.beginPath(); ctx.arc(c0.x + cr * 0.16, c0.y - cr * 0.06, cr * 0.42, 0, TAU); ctx.stroke();
     ctx.fillStyle = pal.text; ctx.font = `600 ${Math.max(9, Math.min(13, 11 * cam.k))}px ${MONO}`; ctx.textAlign = "center"; ctx.textBaseline = "top"; if (o.layout !== "tile") ctx.fillText("YAEORI", c0.x, c0.y + cr * 1.5 + 6);
+    // подписи узлов без наложений: сначала важные (наведённые, выбранные, отделы по размеру), остальные пропускаем, если место занято
+    const placed: [number, number, number, number][] = [], labelOk = new Set<string>();
+    const tryPlace = (x0: number, y0: number, wd: number, ht: number) => { for (const q of placed) if (x0 < q[0] + q[2] && x0 + wd > q[0] && y0 < q[1] + q[3] && y0 + ht > q[1]) return false; placed.push([x0, y0, wd, ht]); return true; };
+    const hubLabel = (n: N) => { const lim = o.layout === "tile" ? 12 : 22; return (n.text.length > lim ? n.text.slice(0, lim - 1) + "…" : n.text) + (o.collapsed.includes(n.key) ? `  +${n.size}` : ""); };
+    ctx.textRendering = "optimizeLegibility";
+    for (const n of order.filter((x) => x.kind === "hub" && x.visible).sort((a, b) => Number(b === hover) - Number(a === hover) || Number(b.chatId === selected) - Number(a.chatId === selected) || Number(isArea(b)) - Number(isArea(a)) || b.size - a.size)) {
+      const p = toScreen(n.x, n.y), r = Math.max(3, radius(n) * cam.k); ctx.font = `${isArea(n) ? 600 : 500} ${isArea(n) ? 12.5 : 11}px ${SANS}`;
+      const t = hubLabel(n), wd = ctx.measureText(t).width + 8;
+      if (tryPlace(p.x - wd / 2, p.y - r - 8 - 16, wd, 16) || n === hover || n.chatId === selected) labelOk.add(n.key);
+    }
     // узлы
     for (const n of order) {
       if (n.kind === "core" || !n.visible) continue;
@@ -411,6 +427,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       if (n.kind === "msg" && !n.key2 && o.layout !== "sectors") { const tw = still ? 1 : 0.88 + Math.sin(now * 0.002 + n.id * 1.7) * 0.12; ctx.globalAlpha = dim * fade * tw; ctx.fillRect(p.x - r * 0.8, p.y - r * 0.8, r * 1.6, r * 1.6); }
       else if (n.kind === "hub" && !isArea(n)) { ctx.beginPath(); ctx.roundRect(p.x - r, p.y - r, r * 2, r * 2, r * 0.35); ctx.fill(); }
       else { ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill(); }
+      if (neu(n) && n.tier === "fresh" && !still) { ctx.globalAlpha = dim * (0.1 + 0.08 * Math.sin(now * 0.004 + n.id)); ctx.fillStyle = hue(n); ctx.beginPath(); ctx.arc(p.x, p.y, r * 2.6, 0, TAU); ctx.fill(); ctx.globalAlpha = dim * fade; }
       // свечение у ключевых, выбранных, найденных и наведённых
       if (n.kind === "hub" || n === hover || pin?.has(n.key) || (n.kind === "msg" && n.key2 && (o.layout !== "sectors" && neu(n) || n.chatId === selected)) || (n.tier === "fresh" && o.layout !== "sectors") || (query && hit)) {
         ctx.globalAlpha = n === hover ? 0.55 : 0.28; ctx.strokeStyle = n.kind === "hub" ? hue(n) : (query && hit) ? pal.text : ctx.fillStyle as string; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(p.x, p.y, r + 4 + (still ? 0 : Math.sin(now * 0.003) * 1.2), 0, TAU); ctx.stroke();
@@ -418,20 +435,44 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       }
       ctx.globalAlpha = 1;
       if (n.kind === "hub") {
-        const lim = o.layout === "tile" ? 10 : 16, t = (n.text.length > lim ? n.text.slice(0, lim - 1) + "…" : n.text).toUpperCase() + (o.collapsed.includes(n.key) ? `  +${n.size}` : "");
-        ctx.font = `600 11px ${MONO}`; ctx.fillStyle = hue(n); ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.globalAlpha = query && !hit ? 0.3 : 1; ctx.fillText(t, p.x, p.y - r - 8); ctx.globalAlpha = 1;
+        if (labelOk.has(n.key)) {
+          const t = hubLabel(n); ctx.font = `${isArea(n) ? 600 : 500} ${isArea(n) ? 12.5 : 11}px ${SANS}`; ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.lineJoin = "round"; ctx.lineWidth = 4; ctx.strokeStyle = pal.bg;
+          ctx.globalAlpha = (query && !hit ? 0.3 : 1) * (isArea(n) ? 1 : 0.82); ctx.strokeText(t, p.x, p.y - r - 8); ctx.fillStyle = hue(n); ctx.fillText(t, p.x, p.y - r - 8); ctx.globalAlpha = 1;
+        }
       } else if (n.kind === "msg" && (o.labels || n.key2) && cam.k > 1.3) {
-        ctx.font = `10px ${MONO}`; ctx.fillStyle = pal.muted; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.globalAlpha = dim; ctx.fillText((n.text.split(/\s+/)[0] ?? "").slice(0, 14), p.x + r + 4, p.y); ctx.globalAlpha = 1;
+        ctx.font = `500 11px ${SANS}`; ctx.fillStyle = pal.muted; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.globalAlpha = dim; ctx.fillText((n.text.split(/\s+/)[0] ?? "").slice(0, 14), p.x + r + 4, p.y); ctx.globalAlpha = 1;
       }
+    }
+    // сущности: ромбик в центре тяжести своих воспоминаний; щелчок подсвечивает все его воспоминания
+    entHover = null;
+    if (linkKinds.has("entity") && ents.length) {
+      const pts: { e: EntityInfo; x: number; y: number; ns: N[] }[] = [];
+      for (const e of ents) { const ns = e.memories.map((id) => nodes.get("m" + (NEURON_OFF + id))).filter((x): x is N => !!x && x.visible); if (ns.length < 2) continue; const q = toScreen(ns.reduce((a, x) => a + x.x, 0) / ns.length, ns.reduce((a, x) => a + x.y, 0) / ns.length); pts.push({ e, x: q.x, y: q.y, ns }); }
+      pts.sort((a, b) => b.ns.length - a.ns.length); const shown = pts.filter((x, i) => i < 14 || x.e.id === entSel);
+      if (mouse && !drag?.moved) for (const x of shown) if (Math.hypot(x.x - mouse.x, x.y - mouse.y) < 10) entHover = x.e.id;
+      const ec = pal.hubs[3] ?? pal.hubs[0]!;
+      shown.forEach((x, i) => {
+        const sel = x.e.id === entSel, hov = x.e.id === entHover;
+        if (sel || hov) { ctx.strokeStyle = ec; ctx.globalAlpha = sel ? 0.7 : 0.4; ctx.lineWidth = 1.2; ctx.setLineDash([5, 3]); ctx.beginPath(); for (const nn of x.ns) { const q = toScreen(nn.x, nn.y); ctx.moveTo(x.x, x.y); ctx.lineTo(q.x, q.y); } ctx.stroke(); ctx.setLineDash([]); }
+        const r = sel || hov ? 7.5 : 5.5; ctx.globalAlpha = 1; ctx.fillStyle = ec; ctx.strokeStyle = pal.bg; ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.moveTo(x.x, x.y - r); ctx.lineTo(x.x + r, x.y); ctx.lineTo(x.x, x.y + r); ctx.lineTo(x.x - r, x.y); ctx.closePath(); ctx.fill(); ctx.stroke();
+        if (i < 8 || sel || hov) { ctx.font = `600 11px ${SANS}`; const wd = ctx.measureText(x.e.name).width + 6; if (sel || hov || tryPlace(x.x + r + 2, x.y - 8, wd, 16)) { ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.lineJoin = "round"; ctx.lineWidth = 4; ctx.strokeStyle = pal.bg; ctx.fillStyle = pal.text; ctx.strokeText(x.e.name, x.x + r + 4, x.y); ctx.fillText(x.e.name, x.x + r + 4, x.y); } }
+      });
+      ctx.globalAlpha = 1;
     }
     // импульсы мысли: сообщение → мозг → память → ответ
     if (!still && thinking && now - lastThink > 1100) { lastThink = now; rings.push({ key: "core", t0: now, col: "accent" }); }
-    const colOf = (c: "user" | "bot" | "accent") => (c === "user" ? pal.user : c === "bot" ? pal.bot : pal.hubs[0]!);
+    const colOf = (c: Col) => (c === "user" ? pal.user : c === "bot" ? pal.bot : c === "gold" ? "#ffc857" : c === "mint" ? "#5eead4" : pal.hubs[0]!), dark = ((parseInt(pal.bg.slice(1, 3), 16) || 0) + (parseInt(pal.bg.slice(3, 5), 16) || 0) + (parseInt(pal.bg.slice(5, 7), 16) || 0)) < 330;
     for (let i = rings.length - 1; i >= 0; i--) {
       const rg = rings[i]!, age = (now - rg.t0) / 900, nd = nodes.get(rg.key);
       if (age >= 1) { rings.splice(i, 1); continue; } if (age < 0 || !nd || !nd.visible) continue;
       const q = toScreen(nd.x, nd.y), rr = Math.max(6, radius(nd) * cam.k) + age * 34 * Math.max(0.7, cam.k);
       ctx.strokeStyle = colOf(rg.col); ctx.globalAlpha = (1 - age) * 0.8; ctx.lineWidth = 2.2 * (1 - age) + 0.6; ctx.beginPath(); ctx.arc(q.x, q.y, rr, 0, TAU); ctx.stroke();
+      if (rg.burst) { // вспышка с лучами: рождение или закрепление воспоминания
+        const r0 = Math.max(6, radius(nd) * cam.k) + 2; ctx.lineWidth = 1.6; ctx.globalAlpha = (1 - age) * 0.9; ctx.beginPath();
+        for (let a = 0; a < 10; a++) { const an = (a / 10) * TAU + 0.3, r1 = r0 + age * 20, r2 = r1 + 5 + (1 - age) * 7; ctx.moveTo(q.x + Math.cos(an) * r1, q.y + Math.sin(an) * r1); ctx.lineTo(q.x + Math.cos(an) * r2, q.y + Math.sin(an) * r2); }
+        ctx.stroke(); ctx.globalAlpha = (1 - age) * 0.25; ctx.fillStyle = colOf(rg.col); ctx.beginPath(); ctx.arc(q.x, q.y, r0 + age * 10, 0, TAU); ctx.fill();
+      }
     }
     for (let i = fxs.length - 1; i >= 0; i--) {
       const f = fxs[i]!, t = (now - f.t0) / f.dur; if (t >= 1) { fxs.splice(i, 1); continue; } if (t < 0) continue;
@@ -440,15 +481,18 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       const lens = pts.slice(1).map((q, j) => Math.hypot(q.x - pts[j]!.x, q.y - pts[j]!.y)), tot = lens.reduce((x, y) => x + y, 0) || 1;
       const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2, at = (d: number) => { let r = Math.max(0, Math.min(tot, d)); for (let j = 0; j < lens.length; j++) { if (r <= lens[j]!) { const u = lens[j]! ? r / lens[j]! : 0; return { x: pts[j]!.x + (pts[j + 1]!.x - pts[j]!.x) * u, y: pts[j]!.y + (pts[j + 1]!.y - pts[j]!.y) * u, seg: j }; } r -= lens[j]!; } return { x: pts[pts.length - 1]!.x, y: pts[pts.length - 1]!.y, seg: lens.length - 1 }; };
       const head = at(e * tot), col = colOf(f.col);
-      while (f.reached < head.seg) { f.reached++; const key = f.keys[f.reached]; if (key) rings.push({ key, t0: now, col: f.col }); }
-      ctx.fillStyle = col;
-      for (let j = 7; j >= 0; j--) { const q = at(e * tot - j * 9 * Math.max(0.8, cam.k)); ctx.globalAlpha = (1 - j / 8) * 0.55; ctx.beginPath(); ctx.arc(q.x, q.y, (4.2 - j * 0.35) * Math.max(0.8, Math.min(1.5, cam.k)), 0, TAU); ctx.fill(); }
-      ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(head.x, head.y, 11, 0, TAU); ctx.fill(); ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(head.x, head.y, 4.6, 0, TAU); ctx.fill();
-      if (t > 0.97 && f.reached < f.keys.length - 1) { f.reached = f.keys.length - 1; rings.push({ key: f.keys[f.reached]!, t0: now, col: f.col }); }
+      while (f.reached < head.seg) { f.reached++; const key = f.keys[f.reached]; if (key) rings.push({ key, t0: now, col: f.col, burst: key === f.keys[f.keys.length - 1] && (f.col === "mint" || f.col === "gold") }); }
+      ctx.fillStyle = col; if (dark) ctx.globalCompositeOperation = "lighter";
+      const sc = Math.max(0.8, Math.min(1.5, cam.k));
+      for (let j = 15; j >= 0; j--) { const q = at(e * tot - j * 6.5 * sc); ctx.globalAlpha = Math.pow(1 - j / 16, 1.6) * 0.6; ctx.beginPath(); ctx.arc(q.x, q.y, (4.6 - j * 0.24) * sc, 0, TAU); ctx.fill(); }
+      const gr = ctx.createRadialGradient(head.x, head.y, 0, head.x, head.y, 22 * sc); gr.addColorStop(0, col); gr.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.globalAlpha = 0.5; ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(head.x, head.y, 22 * sc, 0, TAU); ctx.fill();
+      ctx.fillStyle = col; ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(head.x, head.y, 4.8 * sc, 0, TAU); ctx.fill(); ctx.globalAlpha = 0.9; ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(head.x, head.y, 1.9 * sc, 0, TAU); ctx.fill(); ctx.globalCompositeOperation = "source-over";
+      if (t > 0.97 && f.reached < f.keys.length - 1) { f.reached = f.keys.length - 1; rings.push({ key: f.keys[f.reached]!, t0: now, col: f.col, burst: f.col === "mint" || f.col === "gold" }); }
     }
     ctx.globalAlpha = 1;
     // подпись системного кольца
-    if (sysItems.length) { const t = toScreen(0, -R * 1.08 - 26); ctx.font = `600 10px ${MONO}`; ctx.fillStyle = pal.muted; ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.fillText("СИСТЕМА", t.x, t.y); }
+    if (sysItems.length) { const t = toScreen(0, -R * 1.08 - 26); ctx.font = `600 10px ${SANS}`; ctx.fillStyle = pal.muted; ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.fillText("СИСТЕМА", t.x, t.y); }
     // подсказка
     if (hover) {
       const p = toScreen(hover.x, hover.y); tip.hidden = false;
@@ -463,7 +507,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       else if (hover.kind === "sys") { tip.querySelector("strong")!.textContent = hover.sys!.label; tip.querySelector("small")!.textContent = hover.sys!.detail; }
       else { tip.querySelector("span")!.textContent = hover.text; if (words.length) tip.querySelector("em")!.textContent = "Связано: " + words.join(", "); }
       tip.style.left = Math.min(Math.max(8, p.x + 12), Math.max(8, w - 232)) + "px"; tip.style.top = Math.min(p.y + 12, Math.max(8, h - 96)) + "px"; canvas.style.cursor = "pointer";
-    } else { tip.hidden = true; canvas.style.cursor = drag ? "grabbing" : "grab"; }
+    } else { tip.hidden = true; canvas.style.cursor = drag ? "grabbing" : entHover !== null ? "pointer" : "grab"; }
   }
   rebuild(); raf = requestAnimationFrame(frame);
 
@@ -473,7 +517,9 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   canvas.addEventListener("pointermove", (e) => { const p = pos(e); mouse = p; if (drag) { const dx = p.x - drag.sx, dy = p.y - drag.sy; if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true; if (drag.moved) { cam.x = drag.cx - dx / cam.k; cam.y = drag.cy - dy / cam.k; } } });
   canvas.addEventListener("pointerup", (e) => {
     const was = drag; drag = null; try { canvas.releasePointerCapture(e.pointerId); } catch { /* уже отпущен */ }
-    if (was && !was.moved && hover) { if (hover.kind === "sys") cb.onSystem?.(hover.sys!.id); else if (neu(hover)) { if (hover.src) cb.onPick(hover.src); } else if (!isArea(hover)) cb.onPick(hover.chatId); }
+    if (was && !was.moved && entHover !== null) {
+      const e = ents.find((x) => x.id === entHover); if (e) { entSel = entSel === e.id ? null : e.id; handle.pin(entSel === null ? [] : e.memories.map((id) => "mem:" + id)); cb.onEntity?.(entSel); }
+    } else if (was && !was.moved && hover) { if (hover.kind === "sys") cb.onSystem?.(hover.sys!.id); else if (neu(hover)) { if (hover.src) cb.onPick(hover.src); } else if (!isArea(hover)) cb.onPick(hover.chatId); }
   });
   canvas.addEventListener("pointerleave", () => { mouse = null; });
   canvas.addEventListener("dblclick", () => {
@@ -486,7 +532,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     const after = toWorld(p.x, p.y); cam.x += before.x - after.x; cam.y += before.y - after.y;
   }, { passive: false });
 
-  return {
+  const handle: GraphHandle = {
     destroy() { cancelAnimationFrame(raf); ro.disconnect(); },
     update(d) {
       const first = seen.size === 0; data = d; rebuild();
@@ -496,10 +542,10 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     flow(path, col, delay = 0) {
       const keys = resolve(path), now = performance.now();
       if (keys.length < 1) return;
-      if (still || keys.length < 2) { rings.push({ key: keys[keys.length - 1]!, t0: now + delay, col }); return; }
+      if (still || keys.length < 2) { rings.push({ key: keys[keys.length - 1]!, t0: now + delay, col, burst: col === "mint" || col === "gold" }); return; }
       const dist = keys.length * 520; fxs.push({ keys, t0: now + delay, dur: Math.min(2600, dist), col, reached: 0 });
     },
-    flash(tokens, col) { const now = performance.now(); resolve(tokens).forEach((k, i) => rings.push({ key: k, t0: now + i * 60, col })); },
+    flash(tokens, col) { const now = performance.now(); resolve(tokens).forEach((k, i) => rings.push({ key: k, t0: now + i * 60, col, burst: col === "gold" })); },
     focus(token) {
       const k = resolve([token]).pop(), n = k ? nodes.get(k) : undefined; if (!n) return; stopTour();
       if (!n.visible) { o = { ...o, collapsed: o.collapsed.filter((x) => x !== "h" + n.grp) }; cb.onCollapse?.(o.collapsed); }
@@ -507,6 +553,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       rings.push({ key: n.key, t0: performance.now(), col: "accent" }); rings.push({ key: n.key, t0: performance.now() + 250, col: "bot" });
     },
     setLinkKinds(kinds) { linkKinds = new Set(kinds); },
+    setEntities(list) { ents = list; if (entSel !== null && !list.some((e) => e.id === entSel)) entSel = null; },
     pin(tokens) {
       pinNb.clear(); if (!tokens.length) { pin = null; return; }
       const key = (t: string) => (t.startsWith("mem:") ? "m" + (NEURON_OFF + Number(t.slice(4))) : t.startsWith("chat:") ? "hc" + t.slice(5) : t);
@@ -528,4 +575,5 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     png: () => new Promise((resolve) => { draw(performance.now()); canvas.toBlob((b) => resolve(b), "image/png"); }),
     show(on) { tour = { on, i: -1, at: performance.now() }; return tour.on; },
   };
+  return handle;
 }
