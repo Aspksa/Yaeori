@@ -45,6 +45,8 @@ export interface GraphHandle {
   destroy(): void; update(d: GraphData): void; select(chatId: number | null): void;
   setOptions(p: Partial<MapOptions>): void; options(): MapOptions; setSystem(items: SysItem[]): void;
   expandAll(): void; collapseAll(): void; recenter(): void; search(q: string): void; png(): Promise<Blob | null>; show(on: boolean): boolean;
+  /** Импульс по цепочке узлов: "core", "chat:ID", "mem:ID" (через свою тему). col: кто посылает. */
+  flow(path: string[], col: "user" | "bot" | "accent", delay?: number): void; flash(tokens: string[], col: "user" | "bot" | "accent"): void; think(on: boolean): void;
 }
 interface Callbacks { onPick: (chatId: number) => void; onCollapse?: (keys: string[]) => void; onSystem?: (id: string) => void; onShowEnd?: () => void }
 
@@ -77,6 +79,14 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   let drag: { sx: number; sy: number; cx: number; cy: number; moved: boolean } | null = null, pal = palette(o.theme), palAt = 0;
   let tour: { on: boolean; i: number; at: number } = { on: false, i: -1, at: 0 };
   const seen = new Set<number>();
+  interface Fx { keys: string[]; t0: number; dur: number; col: "user" | "bot" | "accent"; reached: number }
+  const fxs: Fx[] = [], rings: { key: string; t0: number; col: "user" | "bot" | "accent" }[] = []; let thinking = false, lastThink = 0;
+  const resolve = (tokens: string[]) => tokens.flatMap((t) => {
+    if (t === "core") return ["core"];
+    if (t.startsWith("chat:")) return nodes.has("hc" + t.slice(5)) ? ["hc" + t.slice(5)] : [];
+    if (t.startsWith("mem:")) { const k = "m" + (NEURON_OFF + Number(t.slice(4))), n = nodes.get(k); return n ? [...(nodes.has("h" + n.grp) ? ["h" + n.grp] : []), k] : []; }
+    return [];
+  });
   const neu = (n: N) => n.tier !== undefined, isArea = (n: N) => n.kind === "hub" && n.chatId >= AREA_OFF;
 
   const fitK = () => Math.min(w, h) / (R * 2.5);
@@ -360,6 +370,29 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
         ctx.font = `10px ${MONO}`; ctx.fillStyle = pal.muted; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.globalAlpha = dim; ctx.fillText((n.text.split(/\s+/)[0] ?? "").slice(0, 14), p.x + r + 4, p.y); ctx.globalAlpha = 1;
       }
     }
+    // импульсы мысли: сообщение → мозг → память → ответ
+    if (!still && thinking && now - lastThink > 1100) { lastThink = now; rings.push({ key: "core", t0: now, col: "accent" }); }
+    const colOf = (c: "user" | "bot" | "accent") => (c === "user" ? pal.user : c === "bot" ? pal.bot : pal.hubs[0]!);
+    for (let i = rings.length - 1; i >= 0; i--) {
+      const rg = rings[i]!, age = (now - rg.t0) / 900, nd = nodes.get(rg.key);
+      if (age >= 1) { rings.splice(i, 1); continue; } if (age < 0 || !nd || !nd.visible) continue;
+      const q = toScreen(nd.x, nd.y), rr = Math.max(6, radius(nd) * cam.k) + age * 34 * Math.max(0.7, cam.k);
+      ctx.strokeStyle = colOf(rg.col); ctx.globalAlpha = (1 - age) * 0.8; ctx.lineWidth = 2.2 * (1 - age) + 0.6; ctx.beginPath(); ctx.arc(q.x, q.y, rr, 0, TAU); ctx.stroke();
+    }
+    for (let i = fxs.length - 1; i >= 0; i--) {
+      const f = fxs[i]!, t = (now - f.t0) / f.dur; if (t >= 1) { fxs.splice(i, 1); continue; } if (t < 0) continue;
+      const pts = f.keys.map((k) => nodes.get(k)).filter((n): n is N => !!n && (n.visible || n.kind !== "msg")).map((n) => toScreen(n.x, n.y));
+      if (pts.length < 2) { fxs.splice(i, 1); continue; }
+      const lens = pts.slice(1).map((q, j) => Math.hypot(q.x - pts[j]!.x, q.y - pts[j]!.y)), tot = lens.reduce((x, y) => x + y, 0) || 1;
+      const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2, at = (d: number) => { let r = Math.max(0, Math.min(tot, d)); for (let j = 0; j < lens.length; j++) { if (r <= lens[j]!) { const u = lens[j]! ? r / lens[j]! : 0; return { x: pts[j]!.x + (pts[j + 1]!.x - pts[j]!.x) * u, y: pts[j]!.y + (pts[j + 1]!.y - pts[j]!.y) * u, seg: j }; } r -= lens[j]!; } return { x: pts[pts.length - 1]!.x, y: pts[pts.length - 1]!.y, seg: lens.length - 1 }; };
+      const head = at(e * tot), col = colOf(f.col);
+      while (f.reached < head.seg) { f.reached++; const key = f.keys[f.reached]; if (key) rings.push({ key, t0: now, col: f.col }); }
+      ctx.fillStyle = col;
+      for (let j = 7; j >= 0; j--) { const q = at(e * tot - j * 9 * Math.max(0.8, cam.k)); ctx.globalAlpha = (1 - j / 8) * 0.55; ctx.beginPath(); ctx.arc(q.x, q.y, (4.2 - j * 0.35) * Math.max(0.8, Math.min(1.5, cam.k)), 0, TAU); ctx.fill(); }
+      ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(head.x, head.y, 11, 0, TAU); ctx.fill(); ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(head.x, head.y, 4.6, 0, TAU); ctx.fill();
+      if (t > 0.97 && f.reached < f.keys.length - 1) { f.reached = f.keys.length - 1; rings.push({ key: f.keys[f.reached]!, t0: now, col: f.col }); }
+    }
+    ctx.globalAlpha = 1;
     // подпись системного кольца
     if (sysItems.length) { const t = toScreen(0, -R * 1.08 - 26); ctx.font = `600 10px ${MONO}`; ctx.fillStyle = pal.muted; ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.fillText("СИСТЕМА", t.x, t.y); }
     // подсказка
@@ -406,6 +439,14 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       for (const m of d.messages) if (!seen.has(m.id)) { seen.add(m.id); if (!first && !still) { const n = nodes.get("m" + m.id); if (n) n.born = performance.now(); } }
     },
     select(id) { selected = id; },
+    flow(path, col, delay = 0) {
+      const keys = resolve(path), now = performance.now();
+      if (keys.length < 1) return;
+      if (still || keys.length < 2) { rings.push({ key: keys[keys.length - 1]!, t0: now + delay, col }); return; }
+      const dist = keys.length * 520; fxs.push({ keys, t0: now + delay, dur: Math.min(2600, dist), col, reached: 0 });
+    },
+    flash(tokens, col) { const now = performance.now(); resolve(tokens).forEach((k, i) => rings.push({ key: k, t0: now + i * 60, col })); },
+    think(on) { thinking = on; lastThink = 0; },
     setOptions(p) {
       const prev = o; o = { ...o, ...p }; if (p.theme) palAt = 0;
       if (p.group && p.group !== prev.group) { o = { ...o, collapsed: [] }; nodes.clear(); rebuild(); }

@@ -68,8 +68,8 @@ export function createApp({ root, db, dist = null }) {
     const txt = await askModel(s, s.model, sys, "Реплики пользователя из прошлых бесед:\n" + lines.join("\n").slice(0, 7000), 900);
     return db.remember(parseFacts(txt), null, { boost: false });
   }
-  const memoryNote = (text) => {
-    const mem = db.recall(text, 12); if (!mem.length) return "";
+  const memoryNote = (mem) => {
+    if (!mem.length) return "";
     return "\n\nТы помнишь о собеседнике из прошлых бесед (используй естественно, не пересказывай список):\n" + mem.map((m) => "- " + m.text).join("\n");
   };
 
@@ -85,7 +85,8 @@ export function createApp({ root, db, dist = null }) {
     if (!s.model) { send(other("NO_MODEL")); return res.end(); }
     const ctrl = new AbortController();
     res.on("close", () => ctrl.abort());
-    const history = db.recent(id, 20).map((m) => ({ role: m.role, content: m.content })), system = SYSTEM + (s.memory !== false ? memoryNote(text) : "");
+    const history = db.recent(id, 20).map((m) => ({ role: m.role, content: m.content })), mem = s.memory !== false ? db.recall(text, 12) : [], system = SYSTEM + memoryNote(mem);
+    if (mem.length) send({ recalled: mem.map((m) => ({ id: m.id, text: m.text })) });
     const order = [s.model, ...(s.fallbackModel && s.fallbackModel !== s.model ? [s.fallbackModel] : [])];
     let lastErr = null;
     for (let mi = 0; mi < order.length; mi++) {
