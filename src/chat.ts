@@ -1,5 +1,6 @@
 import { createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
 import { mountList } from "./list";
+import { buildVectors, getVectors, saveConn, type VecInfo } from "./api";
 import { AREA_OFF, DEFAULT_MAP, NEURON_OFF, MAP_THEMES, mountGraph, type GraphHandle, type Grouping, type Layout, type MapOptions, type MapTheme, type SysItem } from "./graph";
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
@@ -73,8 +74,16 @@ export function mountHome(): () => void {
     onShowEnd: () => { $("viz-show").setAttribute("aria-pressed", "false"); $("viz-show").textContent = "▷ Показ"; } }, map);
   const panel = $("viz-panel");
   let lastBrain: GraphData | null = null;
-  const list = mountList($("viz-list"), { openChat: (id) => void open(id), focus: (t) => graph.focus(t) });
-  const syncList = () => list.update({ chats, brain: lastBrain, current });
+  let vec: VecInfo | null = null, building = false;
+  const list = mountList($("viz-list"), { openChat: (id) => void open(id), focus: (t) => graph.focus(t),
+    build: () => { building = true; syncList(); void buildVectors().then((v) => { vec = v; }, () => {}).finally(() => { building = false; syncList(); void refreshGraph(); }); },
+    setEmbedModel: (m) => void saveConn({ embedModel: m }).then(() => { vec = null; return getVectors(); }).then((v) => { vec = v; }, () => {}).finally(syncList) });
+  let vecTimer = 0;
+  const pollVec = async () => { // пока векторы досчитываются сами, панель обновляется
+    try { vec = await getVectors(); syncList(); } catch { return; }
+    if (!dead && vec && vec.ok !== false && vec.indexed < vec.total && !vecTimer) vecTimer = window.setTimeout(() => { vecTimer = 0; void pollVec(); }, 4000);
+  };
+  const syncList = () => list.update({ chats, brain: lastBrain, current, vec, building });
   $("viz-list-toggle").addEventListener("click", (e) => { const l = $("viz-list"); l.hidden = !l.hidden; (e.currentTarget as HTMLElement).setAttribute("aria-expanded", String(!l.hidden)); });
   const syncPanel = () => {
     document.querySelectorAll<HTMLElement>("[data-layout]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.layout === map.layout)));
@@ -131,7 +140,7 @@ export function mountHome(): () => void {
     try {
       const [br, ch] = await Promise.all([getBrain().catch(() => null), getGraph()]); if (dead) return;
       const g = br ? mergeMap(br, ch) : ch, nn = br?.messages.length ?? 0;
-      graph.update(g); graph.select(current || null); lastBrain = br; syncList();
+      graph.update(g); graph.select(current || null); lastBrain = br; syncList(); void pollVec();
       const st = g.stats, chatMsgs = ch.messages.length;
       stats.innerHTML = `<i class="live"></i><span${st ? ` title="${st.next ? `До следующего уровня: ${st.next - st.memories}` : "Высший уровень"}"` : ""}>${nn} воспом. · ${st?.topics ?? 0} тем · ${chatMsgs} сообщ. · ${ch.chats.length} чатов${st ? ` · «${esc(st.levelName)}»` : ""}</span>`;
       empty.hidden = g.messages.length > 0;
@@ -193,7 +202,7 @@ export function mountHome(): () => void {
       await sendMessage(id, text, (e) => {
         if (e.user) void refreshGraph();
         if (e.recalled?.length) {
-          e.recalled.slice(0, 8).forEach((m, i) => graph.flow(["mem:" + m.id, "core", "chat:" + id], "bot", 200 + i * 150));
+          e.recalled.slice(0, 8).forEach((m, i) => graph.flow(["mem:" + m.id, "core", "chat:" + id], m.hop ? "accent" : "bot", 200 + i * 150));
           const n = document.createElement("div"); n.className = "msg notice"; const shown = e.recalled.slice(0, 3).map((m) => m.text.replace(/\.$/, "")).join(" · ");
           n.textContent = `Вспомнила (${e.recalled.length}): ${shown.length > 140 ? shown.slice(0, 139) + "…" : shown}`; thread.insertBefore(n, out);
         }
@@ -240,5 +249,5 @@ export function mountHome(): () => void {
     } catch { bubble("error", "Сервер не отвечает. Запустите Yaeori через Yaeori.bat."); }
   })();
 
-  return () => { dead = true; ctrl?.abort(); graph.destroy(); };
+  return () => { dead = true; clearTimeout(vecTimer); ctrl?.abort(); graph.destroy(); };
 }

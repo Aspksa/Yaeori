@@ -23,6 +23,7 @@ export async function openDb(root) {
     CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);
     CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, topics TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'fact',
       strength REAL NOT NULL DEFAULT 1, chat_id INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);`);
+  try { const cols = db.exec("PRAGMA table_info(memories)")[0]?.values.map((r) => r[1]) ?? []; if (!cols.includes("vec")) db.run("ALTER TABLE memories ADD COLUMN vec TEXT"); } catch { /* уже есть */ }
 
   let timer = null;
   const flush = () => {
@@ -43,8 +44,23 @@ export async function openDb(root) {
   const wordsOf = (t) => new Set(norm(t).split(" ").filter((w) => w.length >= 4 && !STOP.has(w)));
   const jaccard = (a, b) => { if (!a.size || !b.size) return 0; let i = 0; for (const x of a) if (b.has(x)) i++; return i / (a.size + b.size - i); };
   const cleanTopics = (arr) => [...new Set((Array.isArray(arr) ? arr : []).map((x) => norm(x).slice(0, 30)).filter((x) => x.length >= 2))].slice(0, 3);
-  const memRows = () => rows("SELECT m.id, m.text, m.topics, m.kind, m.strength, m.chat_id AS chatId, c.title AS chatTitle, m.created_at AS createdAt, m.updated_at AS at FROM memories m LEFT JOIN chats c ON c.id = m.chat_id ORDER BY m.updated_at DESC")
-    .map((m) => ({ ...m, topics: String(m.topics).split(",").filter(Boolean) }));
+  const memRows = () => rows("SELECT m.id, m.text, m.topics, m.kind, m.strength, m.chat_id AS chatId, c.title AS chatTitle, m.created_at AS createdAt, m.updated_at AS at, m.vec AS vecRaw FROM memories m LEFT JOIN chats c ON c.id = m.chat_id ORDER BY m.updated_at DESC")
+    .map(({ vecRaw, ...m }) => ({ ...m, topics: String(m.topics).split(",").filter(Boolean), vec: parseVec(m.id, vecRaw) }));
+  const vecCache = new Map();
+  const parseVec = (id, raw) => { if (!raw) { vecCache.delete(id); return null; } const c = vecCache.get(id); if (c && c.raw === raw) return c.vec; try { const vec = Float32Array.from(JSON.parse(raw)); vecCache.set(id, { raw, vec }); return vec; } catch { return null; } };
+  const dot = (a, b) => { if (!a || !b || a.length !== b.length) return 0; let t = 0; for (let i = 0; i < a.length; i++) t += a[i] * b[i]; return t; };
+  let semCache = { key: "", pairs: [] };
+  /** Связи по смыслу: до 3 ближайших по вектору соседей из разных тем. Пересчёт только когда меняется набор векторов. */
+  const semanticPairs = (mems) => {
+    const withVec = mems.filter((m) => m.vec).slice(0, 300), key = withVec.map((m) => m.id).join(",");
+    if (semCache.key === key) return semCache.pairs;
+    const pairs = new Map();
+    for (const m of withVec) {
+      const best = []; for (const o of withVec) { if (o.id === m.id || o.grp === m.grp) continue; const sim = dot(m.vec, o.vec); if (sim >= 0.8) best.push([sim, o.id]); }
+      best.sort((a, b) => b[0] - a[0]); for (const [, oid] of best.slice(0, 3)) pairs.set(Math.min(m.id, oid) + ":" + Math.max(m.id, oid), { a: Math.min(m.id, oid), b: Math.max(m.id, oid) });
+    }
+    semCache = { key, pairs: [...pairs.values()] }; return semCache.pairs;
+  };
 
   return {
     file,
@@ -85,13 +101,29 @@ export async function openDb(root) {
       return { added, strengthened, addedIds, strengthenedIds };
     },
     /** Какие воспоминания подсказать модели: совпавшие с текущим сообщением, затем сильные и свежие. */
-    recall: (text, n = 12) => {
-      const q = norm(text), qw = wordsOf(text), day = 86400000, t = Date.now();
-      return memRows().map((m) => {
-        const hit = m.topics.filter((x) => q.includes(x)).length * 4 + jaccard(wordsOf(m.text), qw) * 6;
-        return { m, score: hit + Math.log(1 + m.strength) + Math.exp(-(t - Date.parse(m.at)) / (60 * day)) };
-      }).sort((a, b) => b.score - a.score).slice(0, n).map((x) => x.m);
+    recall: (text, n = 12, qvec = null) => {
+      const q = norm(text), qw = wordsOf(text), day = 86400000, t = Date.now(), all = memRows();
+      const scored = all.map((m) => {
+        const hit = m.topics.filter((x) => q.includes(x)).length * 4 + jaccard(wordsOf(m.text), qw) * 6, sem = qvec && m.vec ? Math.max(0, dot(qvec, m.vec) - 0.25) * 14 : 0;
+        return { m, score: hit + sem + Math.log(1 + m.strength) + Math.exp(-(t - Date.parse(m.at)) / (60 * day)) };
+      }).sort((a, b) => b.score - a.score);
+      const seeds = scored.slice(0, Math.max(3, Math.ceil(n * 0.6))).map((x) => x.m), out = seeds.map((m) => ({ ...m, hop: false })), have = new Set(seeds.map((m) => m.id));
+      // граф: соседи найденных воспоминаний — по общим темам и по смыслу
+      const near = [];
+      for (const sd of seeds) for (const m of all) {
+        if (have.has(m.id)) continue;
+        const shared = m.topics.filter((x) => sd.topics.includes(x)).length, sim = sd.vec && m.vec ? dot(sd.vec, m.vec) : 0;
+        if (shared || sim >= 0.78) near.push({ m, w: shared * 2 + sim * 4 + Math.log(1 + m.strength) });
+      }
+      near.sort((a, b) => b.w - a.w);
+      for (const x of near) { if (out.length >= n) break; if (have.has(x.m.id)) continue; have.add(x.m.id); out.push({ ...x.m, hop: true }); }
+      return out.map(({ vec, ...m }) => m);
     },
+    /** Векторы воспоминаний: ещё не посчитанные, запись и сводка. */
+    missingVecs: (limit = 32) => rows("SELECT id, text FROM memories WHERE vec IS NULL OR vec = '' ORDER BY id DESC LIMIT ?", [limit]),
+    memoriesByIds: (ids) => memRows().filter((m) => ids.includes(m.id)).map((m) => ({ id: m.id, text: m.text })),
+    setVecs: (pairs) => { for (const [id, v] of pairs) db.run("UPDATE memories SET vec = ? WHERE id = ?", [JSON.stringify(Array.from(v, (x) => Math.round(x * 1e4) / 1e4)), id]); if (pairs.length) save(); },
+    vecStats: () => { const r = rows("SELECT count(*) AS total, sum(CASE WHEN vec IS NOT NULL AND vec != '' THEN 1 ELSE 0 END) AS indexed FROM memories")[0]; return { total: r.total, indexed: r.indexed ?? 0 }; },
     listMemories: (topic = "") => memRows().filter((m) => !topic || m.topics.includes(norm(topic))).slice(0, 300),
     deleteMemory: (id) => { db.run("DELETE FROM memories WHERE id = ?", [id]); save(); },
     clearMemories: () => { db.run("DELETE FROM memories"); save(); },
@@ -116,7 +148,8 @@ export async function openDb(root) {
       for (const [t, ms] of byTopic) { if (ms.length < 2 || ms.length > 14) continue;
         for (let i = 0; i < ms.length; i++) for (let j = i + 1; j < ms.length; j++) { const a = ms[i], b = ms[j]; if (a.grp === b.grp) continue;
           const k = Math.min(a.id, b.id) + ":" + Math.max(a.id, b.id), p = pairs.get(k) ?? { a: a.id, b: b.id, w: 0, words: [] }; p.w++; if (p.words.length < 3) p.words.push(t); pairs.set(k, p); } }
-      const links = [...pairs.values()].sort((x, y) => y.w - x.w).slice(0, 120), total = all.length, STAGES = [[0, "Зародыш"], [5, "Росток"], [20, "Ученик"], [60, "Знаток"], [150, "Мудрец"]];
+      for (const p of semanticPairs(mems)) { const k = Math.min(p.a, p.b) + ":" + Math.max(p.a, p.b), cur = pairs.get(k); if (cur) { cur.w += 1; if (cur.words.length < 3) cur.words.push("по смыслу"); } else pairs.set(k, { a: p.a, b: p.b, w: 1.2, words: ["по смыслу"] }); }
+      const links = [...pairs.values()].sort((x, y) => y.w - x.w).slice(0, 160), total = all.length, STAGES = [[0, "Зародыш"], [5, "Росток"], [20, "Ученик"], [60, "Знаток"], [150, "Мудрец"]];
       let lv = 0; STAGES.forEach(([n], i) => { if (total >= n) lv = i; });
       return { mode: "memory", chats, messages, links, stats: { memories: total, topics: chats.length, links: links.length, level: lv + 1, levelName: STAGES[lv][1], next: STAGES[lv + 1]?.[0] ?? null } };
     },
