@@ -1,5 +1,5 @@
-import { createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type Msg } from "./api";
-import { DEFAULT_MAP, MAP_THEMES, mountGraph, type GraphHandle, type Grouping, type Layout, type MapOptions, type MapTheme, type SysItem } from "./graph";
+import { createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
+import { AREA_OFF, DEFAULT_MAP, NEURON_OFF, MAP_THEMES, mountGraph, type GraphHandle, type Grouping, type Layout, type MapOptions, type MapTheme, type SysItem } from "./graph";
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 /** Минимальная разметка: блоки кода, `код`, **жирный**, переносы строк. Всё остальное экранируется. */
@@ -11,9 +11,7 @@ export function renderText(src: string): string {
   }).join("");
 }
 
-const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v1", VIEW_KEY = "yaeori:view:v1";
-type View = "brain" | "chats";
-const loadView = (): View => { try { return localStorage.getItem(VIEW_KEY) === "chats" ? "chats" : "brain"; } catch { return "brain"; } };
+const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v1";
 const LAYOUTS: [Layout, string][] = [["rings", "Кольца"], ["circle", "Круг"], ["hex", "Соты"], ["tile", "Плита"], ["hud", "HUD"], ["force", "Сила"]];
 const num = (v: unknown, lo: number, hi: number, d: number) => (typeof v === "number" && v >= lo && v <= hi ? v : d);
 function loadMap(): MapOptions {
@@ -33,12 +31,11 @@ let draft = "";
 
 export const homeView = () => `<div class="home">
   <section class="card viz" aria-label="Карта беседы">
-    <div class="viz-head"><div class="grow"><div class="viz-tabs" role="radiogroup" aria-label="Что показывать"><button type="button" role="radio" aria-checked="true" data-view="brain">Мозг</button><button type="button" role="radio" aria-checked="false" data-view="chats">Беседы</button></div><small class="viz-stats" id="viz-stats"></small></div>
+    <div class="viz-head"><div class="grow"><small class="viz-stats" id="viz-stats"></small></div>
       <button class="btn small" id="viz-show" type="button" aria-pressed="false" title="Камера по очереди облетает чаты">▷ Показ</button>
       <button class="btn small" id="viz-toggle" type="button" aria-expanded="false" aria-controls="viz-panel">Настройки карты</button></div>
     <div class="viz-body"><canvas id="graph" role="img" aria-label="Карта мозга: темы, воспоминания и связи между ними"></canvas><div id="graph-tip" class="graph-tip" hidden></div>
       <div class="viz-empty muted" id="viz-empty" hidden><p id="viz-empty-text"></p><button class="btn small primary" id="viz-scan" type="button" hidden>Вспомнить из бесед</button><small id="viz-scan-status" role="status"></small></div>
-      <div class="viz-time" id="viz-time"><button class="btn small" id="viz-grow" type="button" title="Посмотреть, как рос мозг">▶ Рост</button><input type="range" id="viz-slider" min="0" max="1000" value="1000" aria-label="Развитие: момент времени" /><output id="viz-date">сейчас</output></div>
       <div class="viz-legend muted" id="viz-legend"></div>
       <aside class="viz-panel" id="viz-panel" hidden aria-label="Настройки карты">
         <input id="viz-search" type="search" placeholder="Найти на карте…" autocomplete="off" spellcheck="false" aria-label="Поиск по карте" />
@@ -67,9 +64,9 @@ export function mountHome(): () => void {
   const select = $<HTMLSelectElement>("chat-select"), thread = $("thread"), input = $<HTMLTextAreaElement>("chat-input"), sendBtn = $<HTMLButtonElement>("chat-send");
   const form = $<HTMLFormElement>("chat-form"), stats = $("viz-stats"), empty = $("viz-empty");
   let chats: ChatInfo[] = [], current = 0, busy = false, ctrl: AbortController | null = null, dead = false;
-  let map = loadMap(), view = loadView(), growRaf = 0;
+  let map = loadMap();
   const graph: GraphHandle = mountGraph($<HTMLCanvasElement>("graph"), $("graph-tip"), { onPick: (id) => void open(id), onCollapse: (ids) => { map = { ...map, collapsed: ids }; saveMap(map); },
-    onSystem: (id) => { if (id === "key" || id === "model" || id === "db") window.dispatchEvent(new CustomEvent("yaeori:goto", { detail: { page: "settings", section: id === "key" ? "conn" : id === "model" ? "model" : view === "brain" ? "memory" : "data" } })); else if (id === "palette") { panel.hidden = false; $("viz-toggle").setAttribute("aria-expanded", "true"); } },
+    onSystem: (id) => { if (id === "key" || id === "model" || id === "db") window.dispatchEvent(new CustomEvent("yaeori:goto", { detail: { page: "settings", section: id === "key" ? "conn" : id === "model" ? "model" : "memory" } })); else if (id === "palette") { panel.hidden = false; $("viz-toggle").setAttribute("aria-expanded", "true"); } },
     onShowEnd: () => { $("viz-show").setAttribute("aria-pressed", "false"); $("viz-show").textContent = "▷ Показ"; } }, map);
   const panel = $("viz-panel");
   const syncPanel = () => {
@@ -115,62 +112,35 @@ export function mountHome(): () => void {
   };
   const hello = () => { thread.innerHTML = ""; bubble("assistant", "Здравствуйте! Я Yaeori. О чём поговорим?"); };
 
-  const LEGEND = {
-    brain: `<i class="dot you"></i> свежая <i class="dot long"></i> долгая <i class="dot fade"></i> забывается <span class="viz-hint">колесо — масштаб · перетаскивание — сдвиг</span>`,
-    chats: `<i class="dot you"></i> Вы <i class="dot bot"></i> Yaeori <span class="viz-hint">колесо — масштаб · перетаскивание — сдвиг</span>`,
-  };
-  function syncView() {
-    document.querySelectorAll<HTMLElement>("[data-view]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.view === view)));
-    $("viz-legend").innerHTML = LEGEND[view];
-    $("lb-gchat").textContent = view === "brain" ? "По темам" : "По чатам"; $("lb-gday").textContent = view === "brain" ? "По дням рождения" : "По дням";
-    $("lb-links").textContent = view === "brain" ? "Связи между воспоминаниями" : "Связи между чатами (общие слова)";
-    $("viz-time").hidden = view !== "brain";
-  }
-  const fmtDate = (t: number) => new Date(t).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
-  function setTime(v: number) { // v: 0..1000; 1000 = сейчас
-    const r = graph.range(), slider = $<HTMLInputElement>("viz-slider"), label = $("viz-date");
-    slider.value = String(v); slider.disabled = !r || r[0] === r[1];
-    if (!r || v >= 1000 || slider.disabled) { graph.setCutoff(null); label.textContent = "сейчас"; return; }
-    const t = r[0] + ((r[1] - r[0]) * v) / 1000; graph.setCutoff(t); label.textContent = fmtDate(t);
-  }
-  const stopGrow = () => { if (growRaf) { cancelAnimationFrame(growRaf); growRaf = 0; } $("viz-grow").textContent = "▶ Рост"; };
-  function grow() {
-    if (growRaf) { stopGrow(); setTime(1000); return; }
-    const t0 = performance.now(), dur = 9000; $("viz-grow").textContent = "■ Стоп";
-    const step = (now: number) => { const k = Math.min(1, (now - t0) / dur); setTime(Math.round(k * 1000)); if (k < 1) growRaf = requestAnimationFrame(step); else { growRaf = 0; stopGrow(); } };
-    growRaf = requestAnimationFrame(step);
-  }
+  $("viz-legend").innerHTML = `<i class="dot you"></i> свежая <i class="dot long"></i> долгая <i class="dot fade"></i> забывается <i class="dot bot sq"></i> беседа <span class="viz-hint">колесо — масштаб · перетаскивание — сдвиг</span>`;
+  $("lb-gchat").textContent = "По темам и чатам"; $("lb-gday").textContent = "По дням"; $("lb-links").textContent = "Связи между воспоминаниями";
+  const mergeMap = (b: GraphData, c: GraphData): GraphData => ({
+    stats: b.stats,
+    chats: [...c.chats, ...b.chats.map((a) => ({ ...a, id: AREA_OFF + a.id }))],
+    messages: [...c.messages, ...b.messages.map((m) => ({ ...m, id: NEURON_OFF + m.id, chatId: AREA_OFF + m.chatId }))],
+    links: [...c.links, ...b.links.map((l) => ({ ...l, a: NEURON_OFF + l.a, b: NEURON_OFF + l.b }))],
+  });
   async function refreshGraph() {
     try {
-      const g = view === "brain" ? await getBrain() : await getGraph(); if (dead) return;
-      graph.update(g); graph.select(view === "brain" ? null : current || null);
-      if (!growRaf) setTime(Number($<HTMLInputElement>("viz-slider").value));
-      const st = g.stats;
-      stats.innerHTML = view === "brain" && st
-        ? `<i class="live"></i><span title="${st.next ? `До следующего уровня: ${st.next - st.memories}` : "Высший уровень"}">${st.memories} воспом. · ${st.topics} тем · ${st.links} связей · «${esc(st.levelName)}»</span>`
-        : `<i class="live"></i>${g.messages.length} сообщ. · ${g.chats.length} чатов · ${g.links.length} связей`;
-      const hasData = g.messages.length > 0; empty.hidden = hasData;
-      $("viz-empty-text").textContent = view === "brain" ? "Мозг пока пуст. Он растёт, пока вы общаетесь: Yaeori запоминает факты из бесед." : "Напишите первое сообщение, и здесь начнёт расти карта беседы.";
-      $("viz-scan").hidden = view !== "brain" || chats.length === 0;
+      const [br, ch] = await Promise.all([getBrain().catch(() => null), getGraph()]); if (dead) return;
+      const g = br ? mergeMap(br, ch) : ch, nn = br?.messages.length ?? 0;
+      graph.update(g); graph.select(current || null);
+      const st = g.stats, chatMsgs = ch.messages.length;
+      stats.innerHTML = `<i class="live"></i><span${st ? ` title="${st.next ? `До следующего уровня: ${st.next - st.memories}` : "Высший уровень"}"` : ""}>${nn} воспом. · ${st?.topics ?? 0} тем · ${chatMsgs} сообщ. · ${ch.chats.length} чатов${st ? ` · «${esc(st.levelName)}»` : ""}</span>`;
+      empty.hidden = g.messages.length > 0;
+      $("viz-empty-text").textContent = "Пока пусто. Карта растёт, пока вы общаетесь: Yaeori запоминает факты и копит беседы.";
+      $("viz-scan").hidden = nn > 0 || chats.length === 0;
       const c = await getConn().catch(() => null); if (dead) return;
       const theme = MAP_THEMES.find((t) => t.id === map.theme)?.label ?? "";
       const sys: SysItem[] = [
         { id: "key", label: "Ключ Cloud.ru", detail: c ? (c.keySet ? "задан" : "не задан") : "нет связи", ok: !!c?.keySet, icon: "key" },
         { id: "model", label: "Модель", detail: c?.model || "не выбрана", ok: !!c?.model, icon: "spark" },
-        view === "brain" ? { id: "db", label: "Память", detail: c?.memory === false ? "выключена" : `${st?.memories ?? 0} воспомин.`, ok: c?.memory !== false, icon: "db" }
-          : { id: "db", label: "База SQLite", detail: `${g.messages.length} сообщ., ${g.chats.length} чатов`, ok: true, icon: "db" },
+        { id: "db", label: "Память", detail: c?.memory === false ? "выключена" : `${nn} воспомин., ${chatMsgs} сообщ.`, ok: c?.memory !== false, icon: "db" },
         { id: "chats", label: "Чаты", detail: String(chats.length), ok: true, icon: "chat" },
         { id: "palette", label: "Тема карты", detail: theme, ok: true, icon: "palette" }];
       graph.setSystem(sys);
     } catch { /* карта необязательна */ }
   }
-  async function setView(v: View) {
-    if (v === view) return; view = v; try { localStorage.setItem(VIEW_KEY, v); } catch { /* ignore */ }
-    stopGrow(); graph.reset(); graph.setOptions({ collapsed: [] }); map = { ...map, collapsed: [] }; saveMap(map); syncView(); await refreshGraph(); graph.recenter();
-  }
-  $("viz-grow").addEventListener("click", grow);
-  $<HTMLInputElement>("viz-slider").addEventListener("input", (e) => { stopGrow(); setTime(Number((e.target as HTMLInputElement).value)); });
-  document.querySelectorAll<HTMLElement>("[data-view]").forEach((b) => b.addEventListener("click", () => void setView(b.dataset.view as View)));
   $("viz-scan").addEventListener("click", async () => {
     const btn = $<HTMLButtonElement>("viz-scan"), st = $("viz-scan-status"); btn.disabled = true; st.textContent = "Читаю беседы…";
     try { const r = await scanMemories(); st.textContent = r.ok ? (r.empty ? "Бесед для чтения пока нет." : r.added ? `Вспомнила: ${r.added}` : "Новых фактов не нашла.") : `${r.error ?? "Не получилось"}. ${r.hint ?? ""}`; await refreshGraph(); }
@@ -242,7 +212,7 @@ export function mountHome(): () => void {
     await deleteChat(current); current = 0; try { localStorage.removeItem(LAST); } catch { /* ignore */ }
     await refreshChats(); hello(); await refreshGraph();
   });
-  hello(); syncView();
+  hello();
   void (async () => {
     try {
       await refreshChats();
@@ -253,5 +223,5 @@ export function mountHome(): () => void {
     } catch { bubble("error", "Сервер не отвечает. Запустите Yaeori через Yaeori.bat."); }
   })();
 
-  return () => { dead = true; stopGrow(); ctrl?.abort(); graph.destroy(); };
+  return () => { dead = true; ctrl?.abort(); graph.destroy(); };
 }
