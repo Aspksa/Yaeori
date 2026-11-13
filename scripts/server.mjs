@@ -3,7 +3,7 @@
 import http from "node:http";
 import { HTTP_GUIDE, NET_GUIDE, OTHER_GUIDE, apiMessage, explainHttp, explainNet, other } from "./cloudru-errors.mjs";
 import path from "node:path";
-import { chmodSync, createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 
 const DEFAULTS = { key: "", model: "", fallbackModel: "", memory: true, embedModel: "", baseUrl: "https://foundation-models.api.cloud.ru/v1" };
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp", ".ico": "image/x-icon", ".json": "application/json; charset=utf-8" };
@@ -117,6 +117,33 @@ export function createApp({ root, db, dist = null }) {
     } catch { /* резюме не обязательно */ } finally { sumBusy.delete(id); }
   }
   const digestNote = () => { const d = db.topicDigest(6); return d.length ? "\n\nОбщая картина того, что ты знаешь о собеседнике по темам (кратко, для ориентира):\n" + d.map((x) => `- ${x.topic} (${x.count}): ${x.text}`).join("\n") : ""; };
+  /** «Сон»: ночная уборка. Сливает почти одинаковое, сжимает кластеры, обновляет сводки тем, ослабляет забытые связи, делает копию. Модель нужна только для сжатия и сводок. */
+  let sleeping = false;
+  const BACKUPS = 7;
+  async function sleepCycle(s) {
+    if (sleeping) return null; sleeping = true;
+    const out = { at: new Date().toISOString(), merged: 0, compressed: 0, archived: 0, backup: "" };
+    try {
+      out.merged = db.autoMerge(); out.archived = db.decay(); db.sleepMaintain();
+      if (s.key && s.model && s.memory !== false) {
+        for (const c of db.compressClusters().slice(0, 3)) try {
+          const txt = (await askModel(s, s.model, "Объедини эти факты о пользователе в ОДНО обобщённое утверждение, не потеряв ничего устойчивого. Не более 190 символов, по-русски, без вступлений.", c.items.map((m) => "- " + m.text).join("\n"), 200)).trim().replace(/^["«]|["»]$/g, "");
+          if (txt.length >= 10 && txt.length <= 200 && db.compressMemories(c.items.map((m) => m.id), txt, c.topic)) out.compressed++;
+        } catch { /* тему пропускаем */ }
+        await summarizeTopics(s);
+      }
+      try {
+        const dir = path.join(root, "data", "backups"); mkdirSync(dir, { recursive: true });
+        const name = `yaeori-${out.at.slice(0, 10)}.json`, tmp = path.join(dir, name + ".tmp");
+        writeFileSync(tmp, JSON.stringify(db.exportAll())); renameSync(tmp, path.join(dir, name)); out.backup = name;
+        for (const f of readdirSync(dir).filter((x) => /^yaeori-\d{4}-\d{2}-\d{2}\.json$/.test(x)).sort().slice(0, -BACKUPS)) try { unlinkSync(path.join(dir, f)); } catch { /* не страшно */ }
+      } catch { /* копия не обязательна */ }
+      db.setMeta("sleep", JSON.stringify(out)); return out;
+    } finally { sleeping = false; }
+  }
+  const sleepInfo = () => { try { return JSON.parse(db.getMeta("sleep") ?? "null"); } catch { return null; } };
+  /** Пора ли спать: ночью (3–6 ч) раз в сутки; если компьютер ночью был выключен — при первой возможности через трое суток. */
+  const sleepDue = () => { const last = Date.parse(sleepInfo()?.at ?? "") || 0, hrs = (Date.now() - last) / 3600000, h = new Date().getHours(); return (h >= 3 && h < 6 && hrs > 20) || hrs > 72; };
   /** Сводки по крупным темам: пара предложений вместо десятков фактов. Обновляются, когда тема заметно выросла. */
   let topicBusy = false;
   async function summarizeTopics(s) {
@@ -289,6 +316,14 @@ export function createApp({ root, db, dist = null }) {
       const r = db.compressMemories((Array.isArray(b.ids) ? b.ids : []).map(Number), b.text, String(b.topic ?? "")); if (!r) return json(res, 400, { error: "Нечего сжимать" });
       setTimeout(() => void tick(), 300); return json(res, 200, r);
     }
+    if (pathname === "/api/sleep" && req.method === "GET") return json(res, 200, { last: sleepInfo(), sleeping });
+    if (pathname === "/api/sleep" && req.method === "POST") { const r = await sleepCycle(read()); return r ? json(res, 200, r) : json(res, 409, { error: "Уже убираюсь" }); }
+    const cf = /^\/api\/memories\/(\d+)\/(confirm|correct)$/.exec(pathname);
+    if (cf && req.method === "POST") {
+      if (cf[2] === "confirm") { const r = db.confirmMemory(Number(cf[1])); return r ? json(res, 200, r) : json(res, 404, { error: "Нет такого воспоминания" }); }
+      let b; try { b = await body(req, 4096); } catch { return json(res, 400, { error: "Некорректный запрос" }); }
+      const r = db.correctMemory(Number(cf[1]), b.text); return r ? json(res, 200, r) : json(res, 400, { error: "Нужен новый текст (от 6 символов)" });
+    }
     const rs = /^\/api\/memories\/(\d+)\/restore$/.exec(pathname);
     if (rs && req.method === "POST") { const r = db.restoreMemory(Number(rs[1])); return r ? json(res, 200, r) : json(res, 404, { error: "Нечего возвращать" }); }
     const mp = /^\/api\/memories\/(\d+)$/.exec(pathname);
@@ -351,6 +386,7 @@ export function createApp({ root, db, dist = null }) {
   let tickBusy = false;
   const tick = async () => {
     db.decay();
+    if (sleepDue() && db.countMemories() > 0) void sleepCycle(read());
     const s = read(); if (tickBusy || !s.key || s.memory === false) return;
     void summarizeTopics(s);
     const st = db.vecStats(); if (!(st.total > st.indexed)) return;

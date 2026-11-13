@@ -73,3 +73,8 @@ export async function sendMessage(id: number, text: string, onEvent: (e: StreamE
     }
   }
 }
+export interface SleepInfo { at: string; merged: number; compressed: number; archived: number; backup: string }
+export const getSleep = () => call<{ last: SleepInfo | null; sleeping: boolean }>("/api/sleep");
+export const runSleep = () => call<SleepInfo>("/api/sleep", { method: "POST", body: "{}" });
+export const confirmMemory = (id: number) => call<{ ok: true }>(`/api/memories/${id}/confirm`, { method: "POST", body: "{}" });
+export const correctMemory = (id: number, text: string) => call<{ ok?: boolean; error?: string }>(`/api/memories/${id}/correct`, { method: "POST", body: JSON.stringify({ text }) });
