@@ -377,8 +377,8 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       if (o.layout === "sectors" && !on) continue;
       if (hover && !on && (hover.kind === "msg" || hover.kind === "hub")) continue;
       const pa = toScreen(a.x, a.y), pb = toScreen(b.x, b.y), mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
-      ctx.strokeStyle = on ? pal.text : pal.muted; const nl = neu(a); ctx.globalAlpha = (on ? 0.9 : nl ? 0.24 : 0.16) * Math.min(1, 0.5 + l.w * 0.25); ctx.lineWidth = (on ? 1.4 : 1) + (nl ? Math.min(2.2, (l.w - 1) * 0.7) : 0);
-      ctx.beginPath(); ctx.moveTo(pa.x, pa.y); const bend = nl ? 0.12 : 0.35; ctx.quadraticCurveTo(mx + (c0.x - mx) * bend, my + (c0.y - my) * bend, pb.x, pb.y); ctx.stroke();
+      ctx.strokeStyle = on ? pal.text : pal.muted; const nl = neu(a), sem = l.words.includes("по смыслу"); if (sem) { ctx.setLineDash([2, 4]); if (!on) ctx.strokeStyle = pal.hubs[2]!; } ctx.globalAlpha = (on ? 0.9 : nl ? 0.24 : 0.16) * Math.min(1, 0.5 + l.w * 0.25); ctx.lineWidth = (on ? 1.4 : 1) + (nl ? Math.min(2.2, (l.w - 1) * 0.7) : 0);
+      ctx.beginPath(); ctx.moveTo(pa.x, pa.y); const bend = nl ? 0.12 : 0.35; ctx.quadraticCurveTo(mx + (c0.x - mx) * bend, my + (c0.y - my) * bend, pb.x, pb.y); ctx.stroke(); ctx.setLineDash([]);
     }
     ctx.globalAlpha = 1;
     // центр: двойное кольцо и знак

@@ -1,10 +1,10 @@
-import type { ChatInfo } from "./api";
+import type { ChatInfo, VecInfo } from "./api";
 import type { GraphData } from "./api";
 
 type Tab = "chats" | "memory";
 type Filter = "all" | "fresh" | "long" | "fading";
-export interface ListState { chats: ChatInfo[]; brain: GraphData | null; current: number }
-export interface ListHandlers { openChat(id: number): void; focus(token: string): void }
+export interface ListState { chats: ChatInfo[]; brain: GraphData | null; current: number; vec: VecInfo | null; building?: boolean }
+export interface ListHandlers { openChat(id: number): void; focus(token: string): void; build(): void; setEmbedModel(m: string): void }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const DAY = 86400000;
@@ -22,7 +22,7 @@ const FILTERS: [Filter, string][] = [["all", "Все"], ["fresh", "Свежие"
 
 /** Список слева от карты: беседы по датам и воспоминания по темам. Клик — перелёт камеры к узлу. */
 export function mountList(root: HTMLElement, h: ListHandlers) {
-  let tab: Tab = "chats", q = "", filter: Filter = "all", st: ListState = { chats: [], brain: null, current: 0 };
+  let tab: Tab = "chats", q = "", filter: Filter = "all", st: ListState = { chats: [], brain: null, current: 0, vec: null };
   const closed = new Set<number>();
   root.innerHTML = `<div class="ls-top"><div class="ls-tabs" role="tablist" aria-label="Что показывать в списке"></div>
     <input class="ls-q" type="search" placeholder="Найти…" autocomplete="off" spellcheck="false" aria-label="Поиск по списку" /><div class="ls-chips" role="radiogroup" aria-label="Фильтр памяти" hidden></div></div>
@@ -39,17 +39,25 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     }
     return out;
   }
+  function vecHtml() {
+    const v = st.vec; if (!v) return "";
+    const pct = v.total ? Math.round((v.indexed / v.total) * 100) : 0, state = v.ok === false ? `<em class="bad">${esc(v.error || "Векторы не работают")}</em>` : v.indexed >= v.total && v.total ? "поиск по смыслу работает" : v.model ? `модель ${esc(v.model)}` : "модель не найдена";
+    return `<div class="ls-vec"><div class="ls-vh"><b>Векторы</b><span>${v.indexed} / ${v.total}</span></div><div class="ls-bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></div>
+      <small>${state}</small><div class="ls-vb"><button type="button" class="ls-btn" data-build="1"${st.building || v.indexed >= v.total ? " disabled" : ""}>${st.building ? "Считаю…" : "Построить векторы"}</button>
+      <details><summary>Модель эмбеддингов</summary><input class="ls-em" type="text" value="${esc(v.model)}" placeholder="например bge-m3" spellcheck="false" aria-label="Модель эмбеддингов" /><button type="button" class="ls-btn" data-em="1">Сохранить</button></details></div></div>`;
+  }
   function memHtml() {
     const b = st.brain; if (!b || !b.messages.length) return `<p class="ls-none">Мозг пока пуст. Он растёт, пока вы общаетесь.</p>`;
+    const strip = vecHtml();
     const areas = new Map(b.chats.map((c) => [c.id, c.title] as const)), by = new Map<number, typeof b.messages>();
     for (const m of b.messages) {
       if (filter !== "all" && m.tier !== filter) continue;
       if (q && !(m.preview.toLowerCase().includes(q) || (areas.get(m.chatId) ?? "").toLowerCase().includes(q))) continue;
       (by.get(m.chatId) ?? by.set(m.chatId, []).get(m.chatId)!).push(m);
     }
-    if (!by.size) return `<p class="ls-none">Ничего не найдено.</p>`;
+    if (!by.size) return strip + `<p class="ls-none">Ничего не найдено.</p>`;
     const groups = [...by].sort((a, c) => c[1].length - a[1].length);
-    return groups.map(([id, ms]) => {
+    return strip + groups.map(([id, ms]) => {
       const open = q || filter !== "all" || !closed.has(id);
       const items = ms.sort((x, y) => (y.hits ?? 1) - (x.hits ?? 1) || Date.parse(y.at) - Date.parse(x.at)).map((m) => {
         const [dot, label] = TIER[m.tier ?? "plain"]!;
@@ -66,9 +74,11 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
     const top = body.scrollTop; body.innerHTML = tab === "chats" ? chatsHtml() : memHtml(); body.scrollTop = top;
   }
   root.addEventListener("click", (e) => {
-    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area]"); if (!t) return;
+    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area],[data-build],[data-em]"); if (!t) return;
     const d = t.dataset;
-    if (d.tab) { tab = d.tab as Tab; render(); }
+    if (d.build) h.build();
+    else if (d.em) h.setEmbedModel(root.querySelector<HTMLInputElement>(".ls-em")?.value.trim() ?? "");
+    else if (d.tab) { tab = d.tab as Tab; render(); }
     else if (d.f) { filter = d.f as Filter; render(); }
     else if (d.chat) { h.openChat(Number(d.chat)); h.focus("chat:" + d.chat); }
     else if (d.mem) h.focus("mem:" + d.mem);

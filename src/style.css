@@ -231,3 +231,13 @@ button.pill{border:0;font:inherit;font-size:var(--fs-sm);font-weight:600;cursor:
 .ls-go:hover{background:var(--surface);color:var(--fg)}
 @media (max-width:560px){.viz-list{width:calc(100% - 20px)}}
 .viz-legend{white-space:nowrap;max-width:calc(100% - 20px);overflow:hidden}.viz-legend span{display:inline-flex;align-items:center;gap:5px}
+/* Векторы мозга */
+.ls-vec{margin:4px 2px 8px;padding:9px 10px;border:1px solid var(--line);border-radius:var(--r-md,10px);background:color-mix(in srgb,var(--surface) 80%,transparent);display:grid;gap:6px}
+.ls-vh{display:flex;justify-content:space-between;align-items:baseline}.ls-vh b{font:600 var(--fs-xs)/1 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase}
+.ls-vh span{font:var(--fs-xs)/1 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
+.ls-bar{height:5px;border-radius:99px;background:var(--line);overflow:hidden}.ls-bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--brand),var(--violet,#a78bfa));transition:width .4s}
+.ls-vec small{font-size:var(--fs-xs);color:var(--muted)}.ls-vec em.bad{font-style:normal;color:var(--danger,#f87171)}
+.ls-vb{display:grid;gap:6px}.ls-vb details summary{cursor:pointer;font-size:var(--fs-xs);color:var(--muted)}
+.ls-btn{padding:6px 10px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);font:inherit;font-size:var(--fs-sm);cursor:pointer;color:var(--fg)}
+.ls-btn:not(:disabled):hover{background:var(--brand);color:var(--brand-fg);border-color:transparent}.ls-btn:disabled{opacity:.5;cursor:default}
+.ls-em{min-height:30px;width:100%;margin:6px 0}

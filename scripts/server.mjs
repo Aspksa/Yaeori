@@ -5,7 +5,7 @@ import { HTTP_GUIDE, NET_GUIDE, OTHER_GUIDE, apiMessage, explainHttp, explainNet
 import path from "node:path";
 import { chmodSync, createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 
-const DEFAULTS = { key: "", model: "", fallbackModel: "", memory: true, baseUrl: "https://foundation-models.api.cloud.ru/v1" };
+const DEFAULTS = { key: "", model: "", fallbackModel: "", memory: true, embedModel: "", baseUrl: "https://foundation-models.api.cloud.ru/v1" };
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp", ".ico": "image/x-icon", ".json": "application/json; charset=utf-8" };
 const MAX_BODY = 16 * 1024;
 
@@ -19,7 +19,7 @@ export function createApp({ root, db, dist = null }) {
     renameSync(tmp, file);
     try { chmodSync(file, 0o600); } catch { /* не везде поддерживается */ }
   };
-  const view = (s) => ({ keySet: Boolean(s.key), model: s.model, fallbackModel: s.fallbackModel, memory: s.memory !== false, baseUrl: s.baseUrl });
+  const view = (s) => ({ keySet: Boolean(s.key), model: s.model, fallbackModel: s.fallbackModel, embedModel: s.embedModel ?? "", memory: s.memory !== false, baseUrl: s.baseUrl });
   const json = (res, code, body) => { res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }); res.end(JSON.stringify(body)); };
   const body = (req, max = MAX_BODY) => new Promise((resolve, reject) => {
     let raw = "";
@@ -47,6 +47,36 @@ export function createApp({ root, db, dist = null }) {
     const j = await r.json().catch(() => ({}));
     return String(j?.choices?.[0]?.message?.content ?? "");
   };
+  // ——— Векторы: эмбеддинги по OpenAI-совместимому /embeddings ———
+  let embedAuto = { at: 0, model: "" }, embedState = { ok: null, error: "", model: "" };
+  const norm1 = (v) => { let n = 0; for (const x of v) n += x * x; n = Math.sqrt(n) || 1; return Float32Array.from(v, (x) => x / n); };
+  async function embedModelFor(s) {
+    if (s.embedModel) return s.embedModel;
+    if (Date.now() - embedAuto.at < 600000) return embedAuto.model;
+    embedAuto = { at: Date.now(), model: "" };
+    try {
+      const r = await fetch(s.baseUrl + "/models", { headers: { authorization: `Bearer ${s.key}` }, signal: AbortSignal.timeout(10000), redirect: "error" });
+      const ids = r.ok ? ((await r.json().catch(() => ({})))?.data ?? []).map((m) => m?.id).filter((x) => typeof x === "string") : [];
+      embedAuto.model = ids.find((x) => /embed|bge|e5|gte/i.test(x)) ?? "";
+    } catch { /* без модели эмбеддингов работает поиск по словам */ }
+    return embedAuto.model;
+  }
+  async function embed(s, texts, timeout = 30000) {
+    const model = await embedModelFor(s);
+    if (!model) { embedState = { ok: false, error: "Модель эмбеддингов не найдена. Укажите её в настройках памяти.", model: "" }; throw Object.assign(new Error("NO_EMBED"), { explained: { error: embedState.error } }); }
+    const r = await fetch(s.baseUrl + "/embeddings", { method: "POST", redirect: "error", signal: AbortSignal.timeout(timeout), headers: { authorization: `Bearer ${s.key}`, "content-type": "application/json" }, body: JSON.stringify({ model, input: texts }) });
+    if (!r.ok) { const txt = await r.text().catch(() => ""); const e = explainHttp(r.status, apiMessage(txt)); embedState = { ok: false, error: e.error, model }; throw Object.assign(new Error(e.error), { explained: e }); }
+    const j = await r.json().catch(() => ({})), out = (j?.data ?? []).sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((d) => Array.isArray(d?.embedding) ? norm1(d.embedding) : null);
+    if (out.length !== texts.length || out.some((x) => !x)) { embedState = { ok: false, error: "Ответ эмбеддингов не распознан", model }; throw new Error("BAD_EMBED"); }
+    embedState = { ok: true, error: "", model }; return out;
+  }
+  /** Досчитывает векторы для воспоминаний без них (до limit штук). Ошибка не мешает работе. */
+  async function indexVectors(s, limit = 64) {
+    let done = 0;
+    try { while (done < limit) { const batch = db.missingVecs(Math.min(16, limit - done)); if (!batch.length) break; const vecs = await embed(s, batch.map((m) => m.text)); db.setVecs(batch.map((m, i) => [m.id, vecs[i]])); done += batch.length; } }
+    catch { /* состояние в embedState */ }
+    return done;
+  }
   const parseFacts = (txt) => {
     const a = txt.indexOf("["), b = txt.lastIndexOf("]"); if (a < 0 || b <= a) return [];
     try { const arr = JSON.parse(txt.slice(a, b + 1)); return Array.isArray(arr) ? arr : []; } catch { return []; }
@@ -57,7 +87,9 @@ export function createApp({ root, db, dist = null }) {
     try {
       const sys = LEARN.replace("{N}", "4") + topicHint() + " Если запоминать нечего, верни [].";
       const txt = await askModel(s, model, sys, `Пользователь: ${userText.slice(0, 1500)}\n\nОтвет ассистента: ${reply.slice(0, 700)}`);
-      return db.remember(parseFacts(txt), id);
+      const res = db.remember(parseFacts(txt), id);
+      if (res.addedIds?.length) await indexVectors(s, 16);
+      return res;
     } catch (e) { return { error: e?.explained ?? explainNet(e) }; }
   }
   /** Читает последние реплики пользователя из всех бесед и вспоминает из них факты (без усиления повторов). */
@@ -66,7 +98,9 @@ export function createApp({ root, db, dist = null }) {
     if (!lines.length) return { added: 0, strengthened: 0, empty: true };
     const sys = LEARN.replace("{N}", "12") + topicHint() + " Если запоминать нечего, верни [].";
     const txt = await askModel(s, s.model, sys, "Реплики пользователя из прошлых бесед:\n" + lines.join("\n").slice(0, 7000), 900);
-    return db.remember(parseFacts(txt), null, { boost: false });
+    const res = db.remember(parseFacts(txt), null, { boost: false });
+    if (res.addedIds?.length) await indexVectors(s, 64);
+    return res;
   }
   const memoryNote = (mem) => {
     if (!mem.length) return "";
@@ -85,8 +119,8 @@ export function createApp({ root, db, dist = null }) {
     if (!s.model) { send(other("NO_MODEL")); return res.end(); }
     const ctrl = new AbortController();
     res.on("close", () => ctrl.abort());
-    const history = db.recent(id, 20).map((m) => ({ role: m.role, content: m.content })), mem = s.memory !== false ? db.recall(text, 12) : [], system = SYSTEM + memoryNote(mem);
-    if (mem.length) send({ recalled: mem.map((m) => ({ id: m.id, text: m.text })) });
+    const history = db.recent(id, 20).map((m) => ({ role: m.role, content: m.content })), mem = s.memory !== false ? db.recall(text, 12, await embed(s, [text], 6000).then((v) => v[0]).catch(() => null)) : [], system = SYSTEM + memoryNote(mem);
+    if (mem.length) send({ recalled: mem.map((m) => ({ id: m.id, text: m.text, hop: Boolean(m.hop) })) });
     const order = [s.model, ...(s.fallbackModel && s.fallbackModel !== s.model ? [s.fallbackModel] : [])];
     let lastErr = null;
     for (let mi = 0; mi < order.length; mi++) {
@@ -182,6 +216,11 @@ export function createApp({ root, db, dist = null }) {
     if (pathname === "/api/graph" || pathname.startsWith("/api/chats")) return chats(req, res, pathname);
     if (pathname === "/api/brain" && req.method === "GET") return json(res, 200, db.memGraph());
     if (pathname === "/api/memories" && req.method === "GET") return json(res, 200, { memory: read().memory !== false, total: db.countMemories(), items: db.listMemories().slice(0, 100).map((m) => ({ id: m.id, text: m.text, topics: m.topics, hits: m.strength, at: m.at })) });
+    if (pathname === "/api/vectors" && req.method === "GET") { const s = read(); return json(res, 200, { ...db.vecStats(), model: s.embedModel || embedState.model || embedAuto.model || "", ok: embedState.ok, error: embedState.error }); }
+    if (pathname === "/api/vectors/build" && req.method === "POST") {
+      const s = read(); if (!s.key) return json(res, 200, { ok: false, ...other("NO_KEY") });
+      const done = await indexVectors(s, 128); return json(res, 200, { ok: embedState.ok !== false, done, ...db.vecStats(), model: s.embedModel || embedState.model || embedAuto.model || "", error: embedState.error });
+    }
     if (pathname === "/api/memories" && req.method === "DELETE") { db.clearMemories(); return json(res, 200, { ok: true }); }
     if (pathname === "/api/memories/scan" && req.method === "POST") {
       const s = read(); if (!s.key) return json(res, 200, { ok: false, ...other("NO_KEY") }); if (!s.model) return json(res, 200, { ok: false, ...other("NO_MODEL") });
@@ -194,7 +233,7 @@ export function createApp({ root, db, dist = null }) {
       let b; try { b = await body(req); } catch { return json(res, 400, { error: "Некорректный запрос" }); }
       const s = read();
       if (b.key === null) s.key = ""; else if (str(b.key, 400) !== undefined && str(b.key, 400) !== "") s.key = str(b.key, 400);
-      for (const k of ["model", "fallbackModel"]) if (str(b[k], 200) !== undefined) s[k] = str(b[k], 200);
+      for (const k of ["model", "fallbackModel", "embedModel"]) if (str(b[k], 200) !== undefined) s[k] = str(b[k], 200);
       if (typeof b.memory === "boolean") s.memory = b.memory;
       if (str(b.baseUrl, 300) !== undefined) {
         const u = str(b.baseUrl, 300) || DEFAULTS.baseUrl;
