@@ -1,8 +1,8 @@
 // Запуск Yaeori: зависимости -> типы -> сборка -> свободный порт -> сервер -> браузер.
 // Использование: node scripts/launch.mjs [--dev] [--no-open] [--skip-checks] [--port N]
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, createReadStream, statSync } from "node:fs";
-import http from "node:http";
+import { existsSync } from "node:fs";
+import { createApp } from "./server.mjs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,21 +36,16 @@ const open = () => {
 };
 
 if (dev) {
-  step(`Режим разработки, порт ${port}`);
-  const child = spawn(npm, ["run", "dev", "--", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
+  // Vite на wantPort, API на соседнем порту; Vite проксирует /api (см. vite.config.ts).
+  let apiPort = port + 1;
+  for (let i = 0; i < 50 && !(await free(apiPort)); i++) apiPort++;
+  createApp({ root }).listen(apiPort, "127.0.0.1");
+  step(`Режим разработки, порт ${port} (API ${apiPort})`);
+  const child = spawn(npm, ["run", "dev", "--", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd: root, stdio: "inherit", shell: process.platform === "win32", env: { ...process.env, VITE_API_TARGET: `http://127.0.0.1:${apiPort}` } });
   child.on("exit", (c) => process.exit(c ?? 0));
   setTimeout(open, 1500);
 } else {
-  const dist = path.join(root, "dist");
-  const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp", ".ico": "image/x-icon", ".json": "application/json; charset=utf-8" };
-  http.createServer((req, res) => {
-    let file = path.join(dist, path.normalize(decodeURIComponent((req.url ?? "/").split("?")[0])));
-    if (!file.startsWith(dist)) { res.writeHead(403).end(); return; }
-    if (existsSync(file) && statSync(file).isDirectory()) file = path.join(file, "index.html");
-    if (!existsSync(file)) file = path.join(dist, "index.html");
-    res.writeHead(200, { "content-type": types[path.extname(file)] ?? "application/octet-stream", "x-content-type-options": "nosniff" });
-    createReadStream(file).pipe(res);
-  }).listen(port, "127.0.0.1", () => {
+  createApp({ root, dist: path.join(root, "dist") }).listen(port, "127.0.0.1", () => {
     console.log(`\n\x1b[32mYaeori работает: ${url}\x1b[0m  (Ctrl+C — остановить)`);
     open();
   });
