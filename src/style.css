@@ -266,3 +266,8 @@ button.pill{border:0;font:inherit;font-size:var(--fs-sm);font-weight:600;cursor:
 .ls-edit textarea,.ls-edit input{width:100%;font:inherit;font-size:var(--fs-sm);border:1px solid var(--line);border-radius:6px;padding:6px 8px;background:var(--bg);color:var(--fg);resize:vertical}
 .ls-eb{display:flex;gap:6px;flex-wrap:wrap}.ls-btn.bad{margin-left:auto;color:var(--danger,#f87171)}
 @media (hover:none){.ls-acts{opacity:1}}
+/* Дубли и противоречия */
+.ls-card{margin:6px 2px;padding:9px 10px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);display:grid;gap:5px}
+.ls-card.warn{border-color:var(--warn,#f0a030)}.ls-card p{margin:0;font-size:var(--fs-sm);line-height:1.3}.ls-card p.keep{font-weight:600}.ls-card em{font:normal var(--fs-xs) ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
+.ls-ct{font:600 var(--fs-xs)/1 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.ls-warn{display:block;margin:4px 2px;color:var(--warn,#f0a030);font-size:var(--fs-xs)}
