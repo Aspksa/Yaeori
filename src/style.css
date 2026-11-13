@@ -196,3 +196,37 @@ button.pill{border:0;font:inherit;font-size:var(--fs-sm);font-weight:600;cursor:
 .viz-empty{top:38%;bottom:auto}.viz-empty[hidden]{display:none}
 .mem-item{display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line)}.mem-item>div{flex:1;min-width:0}.mem-item small{display:block;color:var(--muted)}.mem-list{max-height:320px;overflow:auto;margin:8px 0}
 .dot.sq{border-radius:2px}
+/* Список слева от карты */
+.viz-list{position:absolute;z-index:3;top:10px;left:10px;bottom:40px;width:264px;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--r-lg);background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(14px);box-shadow:0 12px 40px rgb(0 0 0/.14);overflow:hidden;animation:ls-in .22s cubic-bezier(.2,.8,.2,1)}
+.viz-list[hidden]{display:none}
+@keyframes ls-in{from{opacity:0;transform:translateX(-12px)}}
+@media (prefers-reduced-motion:reduce){.viz-list{animation:none}}
+.ls-top{display:grid;gap:8px;padding:10px 10px 8px;border-bottom:1px solid var(--line)}
+.ls-tabs{display:grid;grid-template-columns:1fr 1fr;gap:2px;padding:2px;border:1px solid var(--line);border-radius:999px;background:var(--surface)}
+.ls-tabs button{display:flex;justify-content:center;align-items:center;gap:6px;padding:5px 8px;border:0;border-radius:999px;background:none;font:inherit;font-weight:600;font-size:var(--fs-sm);color:var(--muted);cursor:pointer}
+.ls-tabs button em{font:normal 600 var(--fs-xs)/1 ui-monospace,SFMono-Regular,Consolas,monospace;opacity:.8}
+.ls-tabs button[aria-selected=true]{background:var(--brand);color:var(--brand-fg)}
+.ls-q{min-height:34px;width:100%}
+.ls-chips{display:flex;flex-wrap:wrap;gap:4px}.ls-chips[hidden]{display:none}
+.ls-chips button{padding:3px 9px;border:1px solid var(--line);border-radius:999px;background:var(--surface);font:inherit;font-size:var(--fs-xs);cursor:pointer}
+.ls-chips button[aria-checked=true]{background:var(--fg);color:var(--bg);border-color:transparent}
+.ls-body{flex:1;overflow:auto;padding:4px 6px 10px;overscroll-behavior:contain}
+.ls-none{margin:18px 10px;text-align:center;color:var(--muted);font-size:var(--fs-sm)}
+.ls-h{position:sticky;top:0;z-index:1;margin:0;padding:10px 8px 4px;background:color-mix(in srgb,var(--bg) 96%,transparent);font:600 var(--fs-xs)/1 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.ls-row{position:relative;display:grid;grid-template-columns:auto 1fr;align-items:start;column-gap:8px;row-gap:2px;width:100%;padding:7px 8px;border:0;border-radius:var(--r-sm);background:none;font:inherit;text-align:left;color:var(--fg);cursor:pointer}
+.ls-row:hover{background:color-mix(in srgb,var(--brand) 10%,transparent)}
+.ls-row:focus-visible,.ls-gh:focus-visible,.ls-go:focus-visible{outline:2px solid var(--brand);outline-offset:-2px}
+.ls-row .ls-t{grid-column:1/-1;font-size:var(--fs-sm);line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ls-row .ls-m{grid-column:1/-1;font:var(--fs-xs)/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}
+.ls-row.on{background:color-mix(in srgb,var(--brand) 16%,transparent)}
+.ls-row.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:3px;background:var(--brand)}
+.ls-g{margin-top:4px}
+.ls-gh{display:flex;justify-content:space-between;align-items:center;width:100%;padding:8px 8px 4px;border:0;background:none;font:inherit;cursor:pointer;color:var(--fg)}
+.ls-gh b{font:600 var(--fs-xs)/1 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase}
+.ls-gh span{font:600 var(--fs-xs)/1 ui-monospace,SFMono-Regular,Consolas,monospace;padding:2px 7px;border-radius:999px;background:var(--surface);border:1px solid var(--line);color:var(--muted)}
+.ls-gh[aria-expanded=false] b::after{content:" ▸"}.ls-gh[aria-expanded=true] b::after{content:" ▾"}
+.ls-mem{position:relative}.ls-mem .ls-row{grid-template-columns:auto 1fr;padding-right:30px}
+.ls-mem .dot{margin-top:5px}.ls-mem .ls-t,.ls-mem .ls-m{grid-column:2}
+.ls-go{position:absolute;right:4px;top:6px;width:24px;height:24px;border:0;border-radius:6px;background:none;color:var(--muted);cursor:pointer;font-size:14px}
+.ls-go:hover{background:var(--surface);color:var(--fg)}
+@media (max-width:560px){.viz-list{width:calc(100% - 20px)}}

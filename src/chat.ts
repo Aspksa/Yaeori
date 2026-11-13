@@ -1,4 +1,5 @@
 import { createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
+import { mountList } from "./list";
 import { AREA_OFF, DEFAULT_MAP, NEURON_OFF, MAP_THEMES, mountGraph, type GraphHandle, type Grouping, type Layout, type MapOptions, type MapTheme, type SysItem } from "./graph";
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
@@ -32,11 +33,13 @@ let draft = "";
 export const homeView = () => `<div class="home">
   <section class="card viz" aria-label="Карта беседы">
     <div class="viz-head"><div class="grow"><small class="viz-stats" id="viz-stats"></small></div>
+      <button class="btn small" id="viz-list-toggle" type="button" aria-expanded="false" aria-controls="viz-list">☰ Список</button>
       <button class="btn small" id="viz-show" type="button" aria-pressed="false" title="Камера по очереди облетает чаты">▷ Показ</button>
       <button class="btn small" id="viz-toggle" type="button" aria-expanded="false" aria-controls="viz-panel">Настройки карты</button></div>
     <div class="viz-body"><canvas id="graph" role="img" aria-label="Карта мозга: темы, воспоминания и связи между ними"></canvas><div id="graph-tip" class="graph-tip" hidden></div>
       <div class="viz-empty muted" id="viz-empty" hidden><p id="viz-empty-text"></p><button class="btn small primary" id="viz-scan" type="button" hidden>Вспомнить из бесед</button><small id="viz-scan-status" role="status"></small></div>
       <div class="viz-legend muted" id="viz-legend"></div>
+      <aside class="viz-list" id="viz-list" hidden aria-label="Список бесед и воспоминаний"></aside>
       <aside class="viz-panel" id="viz-panel" hidden aria-label="Настройки карты">
         <input id="viz-search" type="search" placeholder="Найти на карте…" autocomplete="off" spellcheck="false" aria-label="Поиск по карте" />
         <h3>Раскладка</h3><div class="viz-grid" role="radiogroup" aria-label="Раскладка">${LAYOUTS.map(([id, t]) => `<button type="button" role="radio" aria-checked="false" data-layout="${id}">${t}</button>`).join("")}</div>
@@ -69,6 +72,10 @@ export function mountHome(): () => void {
     onSystem: (id) => { if (id === "key" || id === "model" || id === "db") window.dispatchEvent(new CustomEvent("yaeori:goto", { detail: { page: "settings", section: id === "key" ? "conn" : id === "model" ? "model" : "memory" } })); else if (id === "palette") { panel.hidden = false; $("viz-toggle").setAttribute("aria-expanded", "true"); } },
     onShowEnd: () => { $("viz-show").setAttribute("aria-pressed", "false"); $("viz-show").textContent = "▷ Показ"; } }, map);
   const panel = $("viz-panel");
+  let lastBrain: GraphData | null = null;
+  const list = mountList($("viz-list"), { openChat: (id) => void open(id), focus: (t) => graph.focus(t) });
+  const syncList = () => list.update({ chats, brain: lastBrain, current });
+  $("viz-list-toggle").addEventListener("click", (e) => { const l = $("viz-list"); l.hidden = !l.hidden; (e.currentTarget as HTMLElement).setAttribute("aria-expanded", String(!l.hidden)); });
   const syncPanel = () => {
     document.querySelectorAll<HTMLElement>("[data-layout]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.layout === map.layout)));
     document.querySelectorAll<HTMLElement>("[data-maptheme]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.maptheme === map.theme)));
@@ -124,7 +131,7 @@ export function mountHome(): () => void {
     try {
       const [br, ch] = await Promise.all([getBrain().catch(() => null), getGraph()]); if (dead) return;
       const g = br ? mergeMap(br, ch) : ch, nn = br?.messages.length ?? 0;
-      graph.update(g); graph.select(current || null);
+      graph.update(g); graph.select(current || null); lastBrain = br; syncList();
       const st = g.stats, chatMsgs = ch.messages.length;
       stats.innerHTML = `<i class="live"></i><span${st ? ` title="${st.next ? `До следующего уровня: ${st.next - st.memories}` : "Высший уровень"}"` : ""}>${nn} воспом. · ${st?.topics ?? 0} тем · ${chatMsgs} сообщ. · ${ch.chats.length} чатов${st ? ` · «${esc(st.levelName)}»` : ""}</span>`;
       empty.hidden = g.messages.length > 0;
@@ -148,7 +155,7 @@ export function mountHome(): () => void {
     btn.disabled = false;
   });
   async function refreshChats() {
-    chats = await listChats(); if (dead) return;
+    chats = await listChats(); if (dead) return; syncList();
     select.innerHTML = (current ? "" : `<option value="0">Новый чат</option>`) + chats.map((c) => `<option value="${c.id}">${esc(c.title)}</option>`).join("");
     select.value = String(current);
   }
