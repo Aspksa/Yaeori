@@ -128,18 +128,25 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
 
   let sectors: { a0: number; a1: number; hue: number }[] = [];
   function targets() {
-    const hubs = order.filter((n) => n.kind === "hub"), nh = hubs.length, collapsed = new Set(o.collapsed);
+    const hubs = order.filter((n) => n.kind === "hub"), collapsed = new Set(o.collapsed);
     for (const n of order) n.visible = n.kind !== "msg" || !collapsed.has("h" + n.grp);
     const sys = order.filter((n) => n.kind === "sys");
     sys.forEach((sn, i) => { const a = (i / Math.max(sys.length, 1)) * TAU - 1.5708 - rot * 0.6, rr = R * 1.08; sn.tx = Math.cos(a) * rr; sn.ty = Math.sin(a) * rr; if (o.layout === "force") { sn.x = sn.tx; sn.y = sn.ty; } });
     if (o.layout === "force") return;
     const core = nodes.get("core")!;
     if (o.layout === "rings") {
+      const tot = order.filter((n) => n.kind === "msg" && n.visible).length, g = (8.5 + 8 * Math.max(0, 1 - tot / 250)) * o.size, r0 = R * 0.3, wts = hubs.map((hb) => Math.pow(Math.max(msgsOf(hb.grp).length, 3), 0.6)), wsum = wts.reduce((x, y) => x + y, 0) || 1;
+      let at = 0;
       hubs.forEach((hb, i) => {
-        const a = (i / nh) * TAU - 1.5708 + rot, hr = nh === 1 ? R * 0.45 : R * 0.58; hb.tx = Math.cos(a) * hr; hb.ty = Math.sin(a) * hr;
-        const ms = collapsed.has(hb.key) ? [] : msgsOf(hb.grp), per = 9, span = Math.min(TAU / Math.max(nh, 1) * 0.78, 1.25);
-        ms.forEach((m, j) => { const row = Math.floor(j / per), col = j % per, cols = Math.min(per, ms.length - row * per);
-          const aa = a + (cols > 1 ? (col / (cols - 1) - 0.5) * span : 0), rr = hr + 26 + row * 15; m.tx = Math.cos(aa) * rr; m.ty = Math.sin(aa) * rr; });
+        const share = (wts[i]! / wsum) * TAU, a0 = at - 1.5708 + rot; at += share;
+        const w = share * 0.8, a = a0 + share / 2, ms = collapsed.has(hb.key) ? [] : msgsOf(hb.grp);
+        let r = r0, k = 0;
+        while (k < ms.length) {
+          const cols = Math.max(1, Math.floor((w * r) / g)), n = Math.min(cols, ms.length - k);
+          for (let c = 0; c < n; c++) { const aa = a + (n > 1 ? (c / (n - 1) - 0.5) * Math.min(w, (n - 1) * g / r) : 0); ms[k + c]!.tx = Math.cos(aa) * r; ms[k + c]!.ty = Math.sin(aa) * r; }
+          k += n; r += g;
+        }
+        const hr = Math.min(r + 12, R * 0.92); hb.tx = Math.cos(a) * hr; hb.ty = Math.sin(a) * hr;
       });
       core.tx = 0; core.ty = 0;
     } else if (o.layout === "circle") {
@@ -273,6 +280,13 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     if (mouse && !drag?.moved) { const wp = toWorld(mouse.x, mouse.y); let best = 1e9; for (const n of order) { if (!n.visible || n.kind === "core") continue; const d = Math.hypot(n.x - wp.x, n.y - wp.y), lim = (radius(n) + 5) / Math.max(cam.k, 0.6); if (d < lim && d < best) { best = d; hover = n; } } }
     const hl = hover?.kind === "hub" ? hover.grp : hover?.kind === "msg" ? hover.grp : null;
     const dimOf = (n: N) => (query && !matches(n) ? 0.15 : selected !== null && n.chatId !== selected && o.layout !== "force" ? 0.4 : 1);
+    // лучи от значков системы к центру
+    for (const sn of order) {
+      if (sn.kind !== "sys") continue; const p = toScreen(sn.x, sn.y), on = hover === sn;
+      const g = ctx.createLinearGradient(p.x, p.y, c0.x, c0.y); g.addColorStop(0, on ? pal.text : pal.muted); g.addColorStop(1, "transparent");
+      ctx.strokeStyle = g; ctx.globalAlpha = on ? 0.7 : 0.22; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(c0.x, c0.y); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
     // связи: центр → отделы
     for (const hb of hubs) {
       const p = toScreen(hb.x, hb.y), on = hb.chatId === selected || hl === hb.grp;
@@ -290,8 +304,8 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     // связи между чатами: общие слова
     if (o.links) for (const l of data.links) {
       const a = byKey.get("m" + l.a), b = byKey.get("m" + l.b); if (!a || !b || !a.visible || !b.visible) continue;
-      const on = hover && (hover.key === a.key || hover.key === b.key);
-      if (hover && !on && hover.kind === "msg") continue;
+      const on = hover && (hover.key === a.key || hover.key === b.key || (hover.kind === "hub" && (a.chatId === hover.chatId || b.chatId === hover.chatId)));
+      if (hover && !on && (hover.kind === "msg" || hover.kind === "hub")) continue;
       const pa = toScreen(a.x, a.y), pb = toScreen(b.x, b.y), mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
       ctx.strokeStyle = on ? pal.text : pal.muted; ctx.globalAlpha = (on ? 0.85 : 0.16) * Math.min(1, 0.5 + l.w * 0.25); ctx.lineWidth = on ? 1.4 : 1;
       ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.quadraticCurveTo(mx + (c0.x - mx) * 0.35, my + (c0.y - my) * 0.35, pb.x, pb.y); ctx.stroke();
