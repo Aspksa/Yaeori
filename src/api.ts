@@ -23,7 +23,7 @@ export interface Msg { id: number; role: "user" | "assistant"; content: string; 
 export interface BrainStats { memories: number; topics: number; links: number; level: number; levelName: string; next: number | null }
 export interface GraphData {
   mode?: "memory"; stats?: BrainStats; chats: { id: number; title: string; count: number }[];
-  messages: { id: number; chatId: number; role: "user" | "assistant"; preview: string; size: number; at: string; tier?: string; pinned?: boolean; hits?: number; src?: number; topics?: string[] }[];
+  messages: { id: number; chatId: number; role: "user" | "assistant"; preview: string; size: number; at: string; tier?: string; pinned?: boolean; past?: boolean; hits?: number; src?: number; topics?: string[] }[];
   links: { a: number; b: number; w: number; words: string[]; kinds?: string[] }[];
 }
 export interface MemoryItem { id: number; text: string; topics: string[]; hits: number; at: string }
@@ -46,6 +46,8 @@ export interface Review { merges: { keep: number; items: { id: number; text: str
 export const reviewMemories = () => call<Review>("/api/memories/review", { method: "POST", body: "{}" });
 export const mergeMemories = (keep: number, drop: number[], history = false) => call<{ ok?: boolean; error?: string }>("/api/memories/merge", { method: "POST", body: JSON.stringify({ keep, drop, history }) });
 export interface Inactive { id: number; text: string; state: "archived" | "replaced"; topics: string[]; at: string; replacedBy: number | null; replacedText: string | null }
+export interface Entity { id: number; name: string; memories: number[]; relations: { s: string; r: string; o: string; past: boolean }[] }
+export const getEntities = () => call<{ items: Entity[] }>("/api/entities");
 export const getInactive = () => call<{ items: Inactive[] }>("/api/memories/inactive");
 export const restoreMemory = (id: number) => call<{ ok?: boolean; error?: string }>(`/api/memories/${id}/restore`, { method: "POST", body: "{}" });
 export const compressMemories = (ids: number[], text: string, topic: string) => call<{ ok?: boolean; error?: string }>("/api/memories/compress", { method: "POST", body: JSON.stringify({ ids, text, topic }) });
@@ -54,7 +56,7 @@ export const getVectors = () => call<VecInfo>("/api/vectors");
 export const buildVectors = () => call<VecInfo & Explained>("/api/vectors/build", { method: "POST", body: "{}" });
 export const scanMemories = () => call<ScanResult>("/api/memories/scan", { method: "POST", body: "{}" });
 
-export type StreamEvent = Explained & { user?: number; delta?: string; assistant?: number; done?: boolean; notice?: string; recalled?: { id: number; text: string; hop?: boolean }[]; brain?: { added?: number; strengthened?: number; addedIds?: number[]; strengthenedIds?: number[]; error?: Explained } };
+export type StreamEvent = Explained & { user?: number; delta?: string; assistant?: number; done?: boolean; notice?: string; recalled?: { id: number; text: string; hop?: boolean; session?: boolean; past?: boolean }[]; brain?: { added?: number; strengthened?: number; addedIds?: number[]; strengthenedIds?: number[]; error?: Explained } };
 /** Отправляет сообщение и отдаёт события ответа по мере прихода. Отмена через signal. */
 export async function sendMessage(id: number, text: string, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
   const r = await fetch(`/api/chats/${id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }), signal });
