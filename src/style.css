@@ -191,3 +191,4 @@ code{padding:2px 8px;border-radius:var(--r-sm);background:var(--surface-2)}
 .mdl-row .chip{flex:none;cursor:pointer}.mdl-row .chip.on{background:var(--brand);color:var(--brand-fg);border-color:transparent}
 .mdl-manual{margin:12px 0}.mdl-manual summary{cursor:pointer;color:var(--muted)}
 .err-table{width:100%;margin-top:8px;border-collapse:collapse;font-size:var(--fs-sm)}.err-table td{padding:6px 8px 6px 0;vertical-align:top;border-bottom:1px solid var(--line)}.err-table td:first-child{white-space:nowrap}
+button.pill{border:0;font:inherit;font-size:var(--fs-sm);font-weight:600;cursor:pointer}

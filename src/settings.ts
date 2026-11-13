@@ -42,7 +42,8 @@ const field = (id: string, label: string, value: string, o: { ph?: string; list?
 
 function connBody() {
   if (!conn) return `<p class="muted">${connError ? esc(connError) : "Загрузка…"}</p>${connError ? `<button class="btn" data-act="retry">Повторить</button>` : ""}`;
-  const pill = `<span class="pill ${conn.keySet ? "ok" : "warn"}">${conn.keySet ? "Ключ задан" : "Ключ не задан"}</span>`;
+  const pill = `<span class="pill ${conn.keySet ? "ok" : "warn"}">${conn.keySet ? "Ключ задан" : "Ключ не задан"}</span>
+    <button type="button" class="pill ${conn.model ? "ok" : "warn"}" data-toc="model" title="Перейти к выбору модели">${conn.model ? "Модель: " + esc(conn.model) : "Модель не выбрана"}</button>`;
   return `<div class="row">${pill}${status ? `<span class="muted" role="status">${esc(status)}</span>` : ""}</div>
     <label class="field"><span>API-ключ</span><span class="row nowrap"><input id="set-key" type="password" name="yaeori-key" autocomplete="new-password" spellcheck="false" placeholder="${conn.keySet ? "Вставьте новый ключ, чтобы заменить" : "Вставьте ключ из консоли Cloud.ru"}" value="${esc(drafts.get("set-key") ?? "")}" data-draft />
       <button class="btn" type="button" data-act="eye" aria-label="Показать ключ" aria-pressed="false">Показать</button></span></label>
@@ -89,7 +90,7 @@ function modelBody() {
   return `<div id="model-top">${modelTop()}</div>
     <label class="field"><span>Поиск по списку</span><input id="set-mq" type="search" value="${esc(mq)}" placeholder="Например: qwen, llama, gpt…" spellcheck="false" autocomplete="off"></label>
     <div id="model-list" class="mdl-list">${modelListHtml()}</div>
-    <details class="mdl-manual"><summary>Указать название вручную</summary>
+    <details class="mdl-manual"${models.length ? "" : " open"}><summary>Указать название вручную</summary>
       ${field("set-model", "Основная модель", conn.model, { ph: "Название из консоли Cloud.ru" })}${field("set-fallback", "Запасная модель", conn.fallbackModel, { ph: "Не задана" })}
       <div class="row"><button class="btn primary" data-act="save-model"${busy ? " disabled" : ""}>Сохранить</button></div></details>
     ${rows ? `<details class="mdl-manual"><summary>Что значат ошибки Cloud.ru</summary><table class="err-table"><tbody>${rows}</tbody></table></details>` : ""}`;
@@ -159,6 +160,9 @@ export function bindSettings(ctx: Ctx) {
   document.addEventListener("change", (e) => {
     const t = e.target as HTMLInputElement;
     if (t.dataset.custom !== undefined) ctx.rerender();
+    if (t.id === "set-model" || t.id === "set-fallback") { // ручной ввод сохраняется сразу, без отдельной кнопки
+      saveConn({ model: val("set-model"), fallbackModel: val("set-fallback") }).then((c) => { conn = c; drafts.delete("set-model"); drafts.delete("set-fallback"); status = "Сохранено"; }, (e: Error) => { status = e.message; }).finally(refreshModels);
+    }
     if (t.id === "set-import" && t.files?.[0]) {
       t.files[0].text().then((txt) => { ctx.set(clean(JSON.parse(txt))); status = "Настройки загружены"; ctx.rerender(); }, () => { status = "Файл не подошёл"; ctx.rerender(); });
     }
