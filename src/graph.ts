@@ -1,12 +1,13 @@
 import type { GraphData } from "./api";
 
 export type Layout = "rings" | "circle" | "hex" | "tile" | "hud" | "force";
-export type MapTheme = "accent" | "ocean" | "neon" | "bordo" | "paper";
+export type MapTheme = "accent" | "night" | "ocean" | "neon" | "bordo" | "paper";
 export type Grouping = "chat" | "day";
 export interface MapOptions { layout: Layout; theme: MapTheme; group: Grouping; rotation: number; force: number; size: number; labels: boolean; links: boolean; collapsed: string[] }
-export const DEFAULT_MAP: MapOptions = { layout: "rings", theme: "accent", group: "chat", rotation: 0.25, force: 0.5, size: 1, labels: false, links: true, collapsed: [] };
+export const DEFAULT_MAP: MapOptions = { layout: "rings", theme: "night", group: "chat", rotation: 0.25, force: 0.5, size: 1, labels: false, links: true, collapsed: [] };
 export const MAP_THEMES: { id: MapTheme; label: string; swatch: string[] }[] = [
   { id: "accent", label: "По акценту", swatch: ["#d9a441", "#a78bfa", "#6fcf97", "#f0a030"] },
+  { id: "night", label: "Ночь (как на примере)", swatch: ["#4fd1b0", "#f0a24a", "#8b7cf6", "#5aa0ff"] },
   { id: "ocean", label: "Океан", swatch: ["#4cc9a4", "#4aa8e8", "#7c9cff", "#e6c35c"] },
   { id: "neon", label: "Неон", swatch: ["#d6ff3d", "#ff3dac", "#3dffe0", "#ffb13d"] },
   { id: "bordo", label: "Бордо", swatch: ["#f0a35c", "#e05a6b", "#d9c27a", "#c97bb0"] },
@@ -16,6 +17,7 @@ export interface SysItem { id: string; label: string; detail: string; ok: boolea
 
 interface Pal { bg: string; hubs: string[]; user: string; bot: string; line: string; text: string; muted: string; warn: string }
 const FIXED: Record<Exclude<MapTheme, "accent">, Pal> = {
+  night: { bg: "#07121d", hubs: ["#4fd1b0", "#f0a24a", "#8b7cf6", "#5aa0ff", "#7fe0c8", "#e8836a", "#b9a8ff", "#93c5fd"], user: "#4fd1b0", bot: "#8b7cf6", line: "rgba(110,190,200,.20)", text: "#d6ece8", muted: "#6f93a0", warn: "#f0a24a" },
   ocean: { bg: "#0b1822", hubs: ["#4cc9a4", "#4aa8e8", "#7c9cff", "#e6c35c", "#f08c6a", "#b48cf0"], user: "#4cc9a4", bot: "#4aa8e8", line: "rgba(120,200,220,.22)", text: "#d4f1ea", muted: "#7fa9b3", warn: "#e6c35c" },
   neon: { bg: "#05050a", hubs: ["#d6ff3d", "#ff3dac", "#3dffe0", "#ffb13d", "#a35bff", "#3d8bff"], user: "#d6ff3d", bot: "#ff3dac", line: "rgba(255,255,255,.16)", text: "#f2f2f2", muted: "#9a9aa8", warn: "#ffb13d" },
   bordo: { bg: "#160a0c", hubs: ["#f0a35c", "#e05a6b", "#d9c27a", "#c97bb0", "#e8855c", "#a8c6a0"], user: "#f0a35c", bot: "#e05a6b", line: "rgba(255,170,150,.18)", text: "#f6e2db", muted: "#b38d86", warn: "#d9c27a" },
@@ -149,7 +151,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     if (o.layout === "force") return;
     const core = nodes.get("core")!;
     if (o.layout === "rings") {
-      const tot = order.filter((n) => n.kind === "msg" && n.visible).length, g = (order.some(neu) ? Math.max(11, 24 - tot * 0.12) : 8.5 + 8 * Math.max(0, 1 - tot / 250)) * o.size, r0 = R * 0.3, wts = hubs.map((hb) => Math.pow(Math.max(msgsOf(hb.grp).length, 3), 0.6)), wsum = wts.reduce((x, y) => x + y, 0) || 1;
+      const tot = order.filter((n) => n.kind === "msg" && n.visible).length, g = (order.some(neu) ? Math.max(11, 24 - tot * 0.12) : 8.5 + 8 * Math.max(0, 1 - tot / 250)) * o.size, r0 = R * (0.3 + 0.2 * Math.max(0, 1 - tot / 120)), wts = hubs.map((hb) => Math.pow(Math.max(msgsOf(hb.grp).length, 3), 0.6)), wsum = wts.reduce((x, y) => x + y, 0) || 1;
       let at = 0;
       hubs.forEach((hb, i) => {
         const share = (wts[i]! / wsum) * TAU, a0 = at - 1.5708 + rot; at += share;
@@ -355,7 +357,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
         ctx.globalAlpha = 1; continue;
       }
       const fade = n.tier === "fading" ? 0.45 : 1;
-      ctx.globalAlpha = dim * fade; ctx.fillStyle = n.kind === "hub" ? hue(n) : neu(n) ? (n.tier === "fresh" ? pal.user : n.tier === "long" ? hue(n) : n.tier === "fading" ? pal.muted : pal.bot) : n.role === "user" ? pal.user : pal.bot;
+      ctx.globalAlpha = dim * fade; ctx.fillStyle = n.kind === "hub" ? hue(n) : n.tier === "fading" ? pal.muted : hue(n);
       if (n.kind === "msg" && !n.key2) { const tw = still ? 1 : 0.88 + Math.sin(now * 0.002 + n.id * 1.7) * 0.12; ctx.globalAlpha = dim * fade * tw; ctx.fillRect(p.x - r * 0.8, p.y - r * 0.8, r * 1.6, r * 1.6); }
       else if (n.kind === "hub" && !isArea(n)) { ctx.beginPath(); ctx.roundRect(p.x - r, p.y - r, r * 2, r * 2, r * 0.35); ctx.fill(); }
       else { ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill(); }

@@ -12,7 +12,7 @@ export function renderText(src: string): string {
   }).join("");
 }
 
-const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v1";
+const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v2";
 const LAYOUTS: [Layout, string][] = [["rings", "Кольца"], ["circle", "Круг"], ["hex", "Соты"], ["tile", "Плита"], ["hud", "HUD"], ["force", "Сила"]];
 const num = (v: unknown, lo: number, hi: number, d: number) => (typeof v === "number" && v >= lo && v <= hi ? v : d);
 function loadMap(): MapOptions {
@@ -119,7 +119,7 @@ export function mountHome(): () => void {
   };
   const hello = () => { thread.innerHTML = ""; bubble("assistant", "Здравствуйте! Я Yaeori. О чём поговорим?"); };
 
-  $("viz-legend").innerHTML = `<i class="dot you"></i> свежая <i class="dot long"></i> долгая <i class="dot fade"></i> забывается <i class="dot bot sq"></i> беседа <span class="viz-hint">колесо — масштаб · перетаскивание — сдвиг</span>`;
+  $("viz-legend").innerHTML = `<span>цвет — тема</span><span><i class="dot you"></i> свежая</span><span><i class="dot long"></i> долгая</span><span><i class="dot fade"></i> забывается</span><span><i class="dot bot sq"></i> беседа</span>`;
   $("lb-gchat").textContent = "По темам и чатам"; $("lb-gday").textContent = "По дням"; $("lb-links").textContent = "Связи между воспоминаниями";
   const mergeMap = (b: GraphData, c: GraphData): GraphData => ({
     stats: b.stats,

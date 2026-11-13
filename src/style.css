@@ -119,7 +119,7 @@ code{padding:2px 8px;border-radius:var(--r-sm);background:var(--surface-2)}
 .graph-tip{position:absolute;z-index:2;max-width:220px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--bg);box-shadow:var(--shadow);font-size:var(--fs-sm);pointer-events:none}
 .graph-tip small{color:var(--muted);margin-left:6px}.graph-tip span{display:block;margin-top:2px;color:var(--muted);overflow-wrap:anywhere}
 .viz-empty{position:absolute;left:0;right:0;bottom:48px;text-align:center;margin:0;padding:0 24px;font-size:var(--fs-md)}
-.viz-legend{position:absolute;left:14px;bottom:10px;font-size:var(--fs-xs);display:flex;gap:10px;align-items:center}
+.viz-legend{position:absolute;left:10px;bottom:8px;padding:3px 10px;border-radius:999px;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(6px);font-size:var(--fs-xs);display:flex;gap:10px;align-items:center}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px}.dot.you{background:var(--brand)}.dot.bot{background:var(--violet,#a78bfa)}
 .chat-head select{flex:1;min-width:0;min-height:36px;padding:6px 10px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--bg);color:var(--fg);font:inherit;font-size:var(--fs-md)}
 .chat-thread{flex:1;min-height:0;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
@@ -230,3 +230,4 @@ button.pill{border:0;font:inherit;font-size:var(--fs-sm);font-weight:600;cursor:
 .ls-go{position:absolute;right:4px;top:6px;width:24px;height:24px;border:0;border-radius:6px;background:none;color:var(--muted);cursor:pointer;font-size:14px}
 .ls-go:hover{background:var(--surface);color:var(--fg)}
 @media (max-width:560px){.viz-list{width:calc(100% - 20px)}}
+.viz-legend{white-space:nowrap;max-width:calc(100% - 20px);overflow:hidden}.viz-legend span{display:inline-flex;align-items:center;gap:5px}
