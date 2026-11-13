@@ -1,5 +1,9 @@
 export interface Conn { keySet: boolean; model: string; fallbackModel: string; baseUrl: string }
-export interface CheckResult { ok: boolean; error?: string; models?: string[]; modelFound?: boolean | null }
+export interface Explained { error?: string; hint?: string; code?: number | string; detail?: string }
+export interface CheckResult extends Explained { ok: boolean; models?: string[]; modelFound?: boolean | null; fallbackFound?: boolean | null }
+export interface TestResult extends Explained { ok: boolean; model?: string; ms?: number; text?: string }
+export interface GuideItem { code: number | string; title: string; hint: string }
+export interface Guide { http: GuideItem[]; net: GuideItem[]; other: GuideItem[] }
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { ...init, headers: { "content-type": "application/json" } });
@@ -10,6 +14,8 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
 export const getConn = () => call<Conn>("/api/settings");
 export const saveConn = (patch: { key?: string | null; model?: string; fallbackModel?: string; baseUrl?: string }) =>
   call<Conn>("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
+export const testModel = (model: string) => call<TestResult>("/api/test-model", { method: "POST", body: JSON.stringify({ model }) });
+export const getGuide = () => call<Guide>("/api/errors-guide");
 export const checkConn = () => call<CheckResult>("/api/check", { method: "POST", body: "{}" });
 
 export interface ChatInfo { id: number; title: string; createdAt: string; count: number }
@@ -22,7 +28,7 @@ export const getMessages = (id: number) => call<Msg[]>(`/api/chats/${id}`);
 export const deleteChat = (id: number) => call<{ ok: true }>(`/api/chats/${id}`, { method: "DELETE" });
 export const getGraph = () => call<GraphData>("/api/graph");
 
-export type StreamEvent = { user?: number; delta?: string; assistant?: number; done?: boolean; error?: string };
+export type StreamEvent = Explained & { user?: number; delta?: string; assistant?: number; done?: boolean; notice?: string };
 /** Отправляет сообщение и отдаёт события ответа по мере прихода. Отмена через signal. */
 export async function sendMessage(id: number, text: string, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
   const r = await fetch(`/api/chats/${id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }), signal });
