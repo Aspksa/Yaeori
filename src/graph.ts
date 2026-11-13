@@ -46,7 +46,7 @@ export interface GraphHandle {
   setOptions(p: Partial<MapOptions>): void; options(): MapOptions; setSystem(items: SysItem[]): void;
   expandAll(): void; collapseAll(): void; recenter(): void; search(q: string): void; png(): Promise<Blob | null>; show(on: boolean): boolean;
   /** Импульс по цепочке узлов: "core", "chat:ID", "mem:ID" (через свою тему). col: кто посылает. */
-  flow(path: string[], col: "user" | "bot" | "accent", delay?: number): void; flash(tokens: string[], col: "user" | "bot" | "accent"): void; think(on: boolean): void;
+  flow(path: string[], col: "user" | "bot" | "accent", delay?: number): void; flash(tokens: string[], col: "user" | "bot" | "accent"): void; think(on: boolean): void; focus(token: string): void;
 }
 interface Callbacks { onPick: (chatId: number) => void; onCollapse?: (keys: string[]) => void; onSystem?: (id: string) => void; onShowEnd?: () => void }
 
@@ -80,6 +80,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   let tour: { on: boolean; i: number; at: number } = { on: false, i: -1, at: 0 };
   const seen = new Set<number>();
   interface Fx { keys: string[]; t0: number; dur: number; col: "user" | "bot" | "accent"; reached: number }
+  let camGoal: { x: number; y: number; k: number } | null = null;
   const fxs: Fx[] = [], rings: { key: string; t0: number; col: "user" | "bot" | "accent" }[] = []; let thinking = false, lastThink = 0;
   const resolve = (tokens: string[]) => tokens.flatMap((t) => {
     if (t === "core") return ["core"];
@@ -222,6 +223,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     const dt = Math.min(now - last, 50); last = now;
     if (!still) rot += dt * o.rotation * 0.0002;
     if (now - palAt > 1000) { pal = palette(o.theme); palAt = now; }
+    if (camGoal) { cam.x += (camGoal.x - cam.x) * 0.16; cam.y += (camGoal.y - cam.y) * 0.16; cam.k += (camGoal.k - cam.k) * 0.16; if (Math.abs(camGoal.x - cam.x) + Math.abs(camGoal.y - cam.y) < 0.4 && Math.abs(camGoal.k - cam.k) < 0.01) camGoal = null; }
     targets();
     if (o.layout === "force") physics(); else for (const n of order) { n.x += (n.tx - n.x) * 0.14; n.y += (n.ty - n.y) * 0.14; }
     if (tour.on) {
@@ -415,7 +417,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
 
   const pos = (e: PointerEvent | WheelEvent | MouseEvent) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
   const stopTour = () => { if (tour.on) { tour.on = false; cb.onShowEnd?.(); } };
-  canvas.addEventListener("pointerdown", (e) => { stopTour(); const p = pos(e); drag = { sx: p.x, sy: p.y, cx: cam.x, cy: cam.y, moved: false }; canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener("pointerdown", (e) => { stopTour(); camGoal = null; const p = pos(e); drag = { sx: p.x, sy: p.y, cx: cam.x, cy: cam.y, moved: false }; canvas.setPointerCapture(e.pointerId); });
   canvas.addEventListener("pointermove", (e) => { const p = pos(e); mouse = p; if (drag) { const dx = p.x - drag.sx, dy = p.y - drag.sy; if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true; if (drag.moved) { cam.x = drag.cx - dx / cam.k; cam.y = drag.cy - dy / cam.k; } } });
   canvas.addEventListener("pointerup", (e) => {
     const was = drag; drag = null; try { canvas.releasePointerCapture(e.pointerId); } catch { /* уже отпущен */ }
@@ -427,7 +429,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     else if (!hover) fit();
   });
   canvas.addEventListener("wheel", (e) => {
-    e.preventDefault(); stopTour(); const p = pos(e), before = toWorld(p.x, p.y);
+    e.preventDefault(); stopTour(); camGoal = null; const p = pos(e), before = toWorld(p.x, p.y);
     cam.k = Math.min(6, Math.max(0.2, cam.k * Math.exp(-e.deltaY * 0.0015)));
     const after = toWorld(p.x, p.y); cam.x += before.x - after.x; cam.y += before.y - after.y;
   }, { passive: false });
@@ -446,6 +448,12 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       const dist = keys.length * 520; fxs.push({ keys, t0: now + delay, dur: Math.min(2600, dist), col, reached: 0 });
     },
     flash(tokens, col) { const now = performance.now(); resolve(tokens).forEach((k, i) => rings.push({ key: k, t0: now + i * 60, col })); },
+    focus(token) {
+      const k = resolve([token]).pop(), n = k ? nodes.get(k) : undefined; if (!n) return; stopTour();
+      if (!n.visible) { o = { ...o, collapsed: o.collapsed.filter((x) => x !== "h" + n.grp) }; cb.onCollapse?.(o.collapsed); }
+      camGoal = { x: n.tx || n.x, y: n.ty || n.y, k: Math.min(6, Math.max(cam.k, fitK() * 2.2)) };
+      rings.push({ key: n.key, t0: performance.now(), col: "accent" }); rings.push({ key: n.key, t0: performance.now() + 250, col: "bot" });
+    },
     think(on) { thinking = on; lastThink = 0; },
     setOptions(p) {
       const prev = o; o = { ...o, ...p }; if (p.theme) palAt = 0;
