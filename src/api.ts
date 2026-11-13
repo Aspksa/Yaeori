@@ -23,8 +23,8 @@ export interface Msg { id: number; role: "user" | "assistant"; content: string; 
 export interface BrainStats { memories: number; topics: number; links: number; level: number; levelName: string; next: number | null }
 export interface GraphData {
   mode?: "memory"; stats?: BrainStats; chats: { id: number; title: string; count: number }[];
-  messages: { id: number; chatId: number; role: "user" | "assistant"; preview: string; size: number; at: string; tier?: string; hits?: number; src?: number }[];
-  links: { a: number; b: number; w: number; words: string[] }[];
+  messages: { id: number; chatId: number; role: "user" | "assistant"; preview: string; size: number; at: string; tier?: string; pinned?: boolean; hits?: number; src?: number; topics?: string[] }[];
+  links: { a: number; b: number; w: number; words: string[]; kinds?: string[] }[];
 }
 export interface MemoryItem { id: number; text: string; topics: string[]; hits: number; at: string }
 export interface MemoryList { memory: boolean; total: number; items: MemoryItem[] }
@@ -39,6 +39,7 @@ export const getBrain = () => call<GraphData>("/api/brain");
 export const getMemories = () => call<MemoryList>("/api/memories");
 export const forgetMemory = (id: number) => call<{ ok: true }>(`/api/memories/${id}`, { method: "DELETE" });
 export const forgetAll = () => call<{ ok: true }>("/api/memories", { method: "DELETE" });
+export const updateMemory = (id: number, patch: { text?: string; topics?: string[] | string; pinned?: boolean }) => call<{ ok?: boolean; error?: string }>(`/api/memories/${id}`, { method: "PUT", body: JSON.stringify(patch) });
 export interface VecInfo { total: number; indexed: number; model: string; ok: boolean | null; error: string; done?: number }
 export const getVectors = () => call<VecInfo>("/api/vectors");
 export const buildVectors = () => call<VecInfo & Explained>("/api/vectors/build", { method: "POST", body: "{}" });

@@ -48,7 +48,7 @@ export interface GraphHandle {
   setOptions(p: Partial<MapOptions>): void; options(): MapOptions; setSystem(items: SysItem[]): void;
   expandAll(): void; collapseAll(): void; recenter(): void; search(q: string): void; png(): Promise<Blob | null>; show(on: boolean): boolean;
   /** Импульс по цепочке узлов: "core", "chat:ID", "mem:ID" (через свою тему). col: кто посылает. */
-  flow(path: string[], col: "user" | "bot" | "accent", delay?: number): void; flash(tokens: string[], col: "user" | "bot" | "accent"): void; think(on: boolean): void; focus(token: string): void;
+  flow(path: string[], col: "user" | "bot" | "accent", delay?: number): void; flash(tokens: string[], col: "user" | "bot" | "accent"): void; think(on: boolean): void; focus(token: string): void; pin(tokens: string[]): void; setLinkKinds(kinds: string[]): void;
 }
 interface Callbacks { onPick: (chatId: number) => void; onCollapse?: (keys: string[]) => void; onSystem?: (id: string) => void; onShowEnd?: () => void }
 
@@ -82,6 +82,8 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
   let tour: { on: boolean; i: number; at: number } = { on: false, i: -1, at: 0 };
   const seen = new Set<number>();
   interface Fx { keys: string[]; t0: number; dur: number; col: "user" | "bot" | "accent"; reached: number }
+  let linkKinds = new Set(["topic", "sense", "chat"]);
+  let pin: Set<string> | null = null; const pinNb = new Set<string>();
   let camGoal: { x: number; y: number; k: number } | null = null;
   const fxs: Fx[] = [], rings: { key: string; t0: number; col: "user" | "bot" | "accent" }[] = []; let thinking = false, lastThink = 0;
   const resolve = (tokens: string[]) => tokens.flatMap((t) => {
@@ -340,7 +342,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     hover = null;
     if (mouse && !drag?.moved) { const wp = toWorld(mouse.x, mouse.y); let best = 1e9; for (const n of order) { if (!n.visible || n.kind === "core") continue; const d = Math.hypot(n.x - wp.x, n.y - wp.y), lim = (radius(n) + 5) / Math.max(cam.k, 0.6); if (d < lim && d < best) { best = d; hover = n; } } }
     const hl = hover?.kind === "hub" ? hover.grp : hover?.kind === "msg" ? hover.grp : null;
-    const dimOf = (n: N) => (query && !matches(n) ? 0.15 : selected !== null && n.chatId !== selected && n.src !== selected && o.layout !== "force" ? 0.4 : 1);
+    const dimOf = (n: N) => (query && !matches(n) ? 0.15 : pin && n.kind === "msg" && !pin.has(n.key) && !pinNb.has(n.key) ? 0.22 : selected !== null && n.chatId !== selected && n.src !== selected && o.layout !== "force" ? 0.4 : 1);
     // лучи от значков системы к центру
     for (const sn of order) {
       if (sn.kind !== "sys") continue; const p = toScreen(sn.x, sn.y), on = hover === sn;
@@ -373,11 +375,12 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     // связи между чатами: общие слова
     if (o.links) for (const l of data.links) {
       const a = byKey.get("m" + l.a), b = byKey.get("m" + l.b); if (!a || !b || !a.visible || !b.visible) continue;
-      const on = hover && (hover.key === a.key || hover.key === b.key || (hover.kind === "hub" && (a.chatId === hover.chatId || b.chatId === hover.chatId)));
+      const lk = l.kinds?.length ? l.kinds : ["topic"]; if (!lk.some((k) => linkKinds.has(k))) continue;
+      const on = (pin && (pin.has(a.key) || pin.has(b.key))) || hover && (hover.key === a.key || hover.key === b.key || (hover.kind === "hub" && (a.chatId === hover.chatId || b.chatId === hover.chatId)));
       if (o.layout === "sectors" && !on) continue;
       if (hover && !on && (hover.kind === "msg" || hover.kind === "hub")) continue;
       const pa = toScreen(a.x, a.y), pb = toScreen(b.x, b.y), mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
-      ctx.strokeStyle = on ? pal.text : pal.muted; const nl = neu(a), sem = l.words.includes("по смыслу"); if (sem) { ctx.setLineDash([2, 4]); if (!on) ctx.strokeStyle = pal.hubs[2]!; } ctx.globalAlpha = (on ? 0.9 : nl ? 0.24 : 0.16) * Math.min(1, 0.5 + l.w * 0.25); ctx.lineWidth = (on ? 1.4 : 1) + (nl ? Math.min(2.2, (l.w - 1) * 0.7) : 0);
+      ctx.strokeStyle = on ? pal.text : pal.muted; const nl = neu(a), sem = lk.includes("sense"), cht = !sem && lk.includes("chat"); if (sem) { ctx.setLineDash([2, 4]); if (!on) ctx.strokeStyle = pal.hubs[2]!; } else if (cht) { ctx.setLineDash([1, 4]); if (!on) ctx.strokeStyle = pal.hubs[1]!; } ctx.globalAlpha = (on ? 0.9 : nl ? 0.24 : 0.16) * Math.min(1, 0.5 + l.w * 0.25); ctx.lineWidth = (on ? 1.4 : 1) + (nl ? Math.min(2.2, (l.w - 1) * 0.7) : 0);
       ctx.beginPath(); ctx.moveTo(pa.x, pa.y); const bend = nl ? 0.12 : 0.35; ctx.quadraticCurveTo(mx + (c0.x - mx) * bend, my + (c0.y - my) * bend, pb.x, pb.y); ctx.stroke(); ctx.setLineDash([]);
     }
     ctx.globalAlpha = 1;
@@ -409,7 +412,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       else if (n.kind === "hub" && !isArea(n)) { ctx.beginPath(); ctx.roundRect(p.x - r, p.y - r, r * 2, r * 2, r * 0.35); ctx.fill(); }
       else { ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill(); }
       // свечение у ключевых, выбранных, найденных и наведённых
-      if (n.kind === "hub" || n === hover || (n.kind === "msg" && n.key2 && (o.layout !== "sectors" && neu(n) || n.chatId === selected)) || (n.tier === "fresh" && o.layout !== "sectors") || (query && hit)) {
+      if (n.kind === "hub" || n === hover || pin?.has(n.key) || (n.kind === "msg" && n.key2 && (o.layout !== "sectors" && neu(n) || n.chatId === selected)) || (n.tier === "fresh" && o.layout !== "sectors") || (query && hit)) {
         ctx.globalAlpha = n === hover ? 0.55 : 0.28; ctx.strokeStyle = n.kind === "hub" ? hue(n) : (query && hit) ? pal.text : ctx.fillStyle as string; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(p.x, p.y, r + 4 + (still ? 0 : Math.sin(now * 0.003) * 1.2), 0, TAU); ctx.stroke();
         if (n === hover) { ctx.globalAlpha = 0.25; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(p.x, p.y, r + 9, 0, TAU); ctx.stroke(); }
       }
@@ -502,6 +505,13 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       if (!n.visible) { o = { ...o, collapsed: o.collapsed.filter((x) => x !== "h" + n.grp) }; cb.onCollapse?.(o.collapsed); }
       camGoal = { x: n.tx || n.x, y: n.ty || n.y, k: Math.min(6, Math.max(cam.k, fitK() * 2.2)) };
       rings.push({ key: n.key, t0: performance.now(), col: "accent" }); rings.push({ key: n.key, t0: performance.now() + 250, col: "bot" });
+    },
+    setLinkKinds(kinds) { linkKinds = new Set(kinds); },
+    pin(tokens) {
+      pinNb.clear(); if (!tokens.length) { pin = null; return; }
+      const key = (t: string) => (t.startsWith("mem:") ? "m" + (NEURON_OFF + Number(t.slice(4))) : t.startsWith("chat:") ? "hc" + t.slice(5) : t);
+      pin = new Set(tokens.map(key));
+      for (const l of data.links) { const ka = "m" + l.a, kb = "m" + l.b; if (pin.has(ka)) pinNb.add(kb); if (pin.has(kb)) pinNb.add(ka); }
     },
     think(on) { thinking = on; lastThink = 0; },
     setOptions(p) {

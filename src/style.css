@@ -241,3 +241,28 @@ button.pill{border:0;font:inherit;font-size:var(--fs-sm);font-weight:600;cursor:
 .ls-btn{padding:6px 10px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);font:inherit;font-size:var(--fs-sm);cursor:pointer;color:var(--fg)}
 .ls-btn:not(:disabled):hover{background:var(--brand);color:var(--brand-fg);border-color:transparent}.ls-btn:disabled{opacity:.5;cursor:default}
 .ls-em{min-height:30px;width:100%;margin:6px 0}
+/* Связи в списке */
+.ls-tabs{grid-template-columns:repeat(3,1fr)}.ls-tabs button{padding:5px 4px;gap:4px}
+.ls-link{grid-template-columns:1fr;row-gap:3px;border:1px solid var(--line);margin:4px 0;background:color-mix(in srgb,var(--surface) 70%,transparent)}
+.ls-link .ls-t{-webkit-line-clamp:1}.ls-link .ls-x{font:600 var(--fs-xs)/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--violet,#a78bfa);letter-spacing:.02em}
+.ls-mem.lock .ls-row{background:color-mix(in srgb,var(--brand) 16%,transparent);box-shadow:inset 3px 0 0 var(--brand)}
+.ls-rel{margin:0 0 4px 22px;padding:2px 8px;border:1px solid var(--line);border-radius:999px;background:none;font:var(--fs-xs)/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);cursor:pointer}
+.ls-rel:hover,.ls-rel[aria-expanded=true]{color:var(--fg);border-color:var(--brand)}
+.ls-sub{margin:0 0 6px 22px;padding-left:8px;border-left:2px solid var(--line);display:grid;gap:2px}
+.ls-sr{display:grid;gap:1px;padding:4px 6px;border:0;border-radius:6px;background:none;text-align:left;font:inherit;font-size:var(--fs-sm);color:var(--fg);cursor:pointer}
+.ls-sr:hover{background:color-mix(in srgb,var(--brand) 10%,transparent)}.ls-sr em{font:normal var(--fs-xs)/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--violet,#a78bfa)}
+/* Типы связей */
+.ls-kinds{display:flex;gap:6px;margin:6px 2px 2px}
+.ls-k{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--line);border-radius:999px;background:var(--surface);font:inherit;font-size:var(--fs-xs);cursor:pointer;color:var(--fg)}
+.ls-k[aria-pressed=false]{opacity:.45}.ls-k i,.ls-kk i{display:inline-block;width:14px;height:0;border-top:2px solid var(--muted)}
+.ls-k.sense i,.ls-kk i.sense{border-top:2px dotted var(--violet,#a78bfa)}.ls-k.chat i,.ls-kk i.chat{border-top:2px dotted var(--warn,#f0a030)}
+.ls-kk{display:flex;gap:4px;margin-bottom:2px}.ls-link{align-items:start}
+/* Правка и закрепление */
+.ls-acts{position:absolute;right:4px;top:5px;display:flex;gap:1px;opacity:0;transition:opacity .15s}
+.ls-mem:hover .ls-acts,.ls-mem:focus-within .ls-acts,.ls-mem.lock .ls-acts,.ls-acts:has(.on){opacity:1}
+.ls-acts .ls-go{position:static;width:22px;height:22px;font-size:12px}.ls-acts .ls-go.on{background:color-mix(in srgb,var(--brand) 22%,transparent)}
+.ls-mem .ls-row{padding-right:74px}
+.ls-edit{display:grid;gap:6px;margin:4px 0;padding:8px;border:1px solid var(--brand);border-radius:var(--r-sm);background:var(--surface)}
+.ls-edit textarea,.ls-edit input{width:100%;font:inherit;font-size:var(--fs-sm);border:1px solid var(--line);border-radius:6px;padding:6px 8px;background:var(--bg);color:var(--fg);resize:vertical}
+.ls-eb{display:flex;gap:6px;flex-wrap:wrap}.ls-btn.bad{margin-left:auto;color:var(--danger,#f87171)}
+@media (hover:none){.ls-acts{opacity:1}}

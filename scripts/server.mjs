@@ -226,6 +226,13 @@ export function createApp({ root, db, dist = null }) {
       const s = read(); if (!s.key) return json(res, 200, { ok: false, ...other("NO_KEY") }); if (!s.model) return json(res, 200, { ok: false, ...other("NO_MODEL") });
       try { return json(res, 200, { ok: true, ...(await scanOld(s)) }); } catch (e) { return json(res, 200, { ok: false, ...(e?.explained ?? explainNet(e)) }); }
     }
+    const mp = /^\/api\/memories\/(\d+)$/.exec(pathname);
+    if (mp && req.method === "PUT") {
+      let b; try { b = await body(req); } catch { return json(res, 400, { error: "Некорректный запрос" }); }
+      const patch = {}; if (typeof b.text === "string") patch.text = b.text; if (Array.isArray(b.topics)) patch.topics = b.topics.map(String); else if (typeof b.topics === "string") patch.topics = b.topics.split(","); if (typeof b.pinned === "boolean") patch.pinned = b.pinned;
+      const r = db.updateMemory(Number(mp[1]), patch); if (!r) return json(res, 404, { error: "Такого воспоминания нет" }); if (r.error) return json(res, 400, r);
+      setTimeout(() => void tick(), 300); return json(res, 200, r);
+    }
     const mm = /^\/api\/memories\/(\d+)$/.exec(pathname);
     if (mm && req.method === "DELETE") { db.deleteMemory(Number(mm[1])); return json(res, 200, { ok: true }); }
     if (pathname === "/api/settings" && req.method === "GET") return json(res, 200, view(read()));

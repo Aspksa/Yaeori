@@ -1,6 +1,6 @@
 import { createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
 import { mountList } from "./list";
-import { buildVectors, getVectors, saveConn, type VecInfo } from "./api";
+import { buildVectors, forgetMemory, getVectors, saveConn, updateMemory, type VecInfo } from "./api";
 import { AREA_OFF, DEFAULT_MAP, NEURON_OFF, MAP_THEMES, mountGraph, type GraphHandle, type Grouping, type Layout, type MapOptions, type MapTheme, type SysItem } from "./graph";
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
@@ -75,7 +75,8 @@ export function mountHome(): () => void {
   const panel = $("viz-panel");
   let lastBrain: GraphData | null = null;
   let vec: VecInfo | null = null, building = false;
-  const list = mountList($("viz-list"), { openChat: (id) => void open(id), focus: (t) => graph.focus(t),
+  const list = mountList($("viz-list"), { openChat: (id) => void open(id), focus: (t) => graph.focus(t), pin: (t) => graph.pin(t), kinds: (k) => graph.setLinkKinds(k),
+    edit: (id, p) => updateMemory(id, p).then(() => refreshGraph()), forget: (id) => forgetMemory(id).then(() => refreshGraph()),
     build: () => { building = true; syncList(); void buildVectors().then((v) => { vec = v; }, () => {}).finally(() => { building = false; syncList(); void refreshGraph(); }); },
     setEmbedModel: (m) => void saveConn({ embedModel: m }).then(() => { vec = null; return getVectors(); }).then((v) => { vec = v; }, () => {}).finally(syncList) });
   let vecTimer = 0;
