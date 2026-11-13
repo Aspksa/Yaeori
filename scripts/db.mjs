@@ -158,6 +158,29 @@ export async function openDb(root) {
         return { ok: true, chats: d.chats.length, messages: nm, memories: nmem };
       } catch (e) { try { db.run("ROLLBACK"); } catch { /* уже откачено */ } return { error: "Копию не удалось загрузить: " + (e?.message ?? "ошибка") }; }
     },
+    /** Кандидаты в дубли: близкие по смыслу (вектор) или по словам при общей теме. Группы по 2–6 воспоминаний. */
+    duplicateGroups: () => {
+      const all = memRows(), par = new Map(all.map((m) => [m.id, m.id])), find = (x) => { while (par.get(x) !== x) { par.set(x, par.get(par.get(x))); x = par.get(x); } return x; };
+      const ws = new Map(all.map((m) => [m.id, wordsOf(m.text)]));
+      for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
+        const a = all[i], b = all[j], sim = a.vec && b.vec ? dot(a.vec, b.vec) : 0, share = a.topics.some((t) => b.topics.includes(t));
+        if (sim >= 0.92 || (share && jaccard(ws.get(a.id), ws.get(b.id)) >= 0.5)) par.set(find(a.id), find(b.id));
+      }
+      const groups = new Map(); for (const m of all) { const r = find(m.id); groups.set(r, [...(groups.get(r) ?? []), m]); }
+      return [...groups.values()].filter((g) => g.length >= 2 && g.length <= 6).slice(0, 30).map((g) => {
+        const keep = [...g].sort((x, y) => Number(y.pinned) - Number(x.pinned) || y.strength - x.strength || y.text.length - x.text.length)[0];
+        return { keep: keep.id, items: g.map((m) => ({ id: m.id, text: m.text, hits: m.strength, pinned: m.pinned })) };
+      });
+    },
+    memoryTexts: (limit = 60) => memRows().slice().sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.strength - a.strength).slice(0, limit).map((m) => ({ id: m.id, text: m.text })),
+    /** Слияние: остаётся keep, у него сила и темы всех, остальные удаляются. */
+    mergeMemories: (keepId, dropIds) => {
+      const all = memRows(), keep = all.find((m) => m.id === keepId), drops = all.filter((m) => dropIds.includes(m.id) && m.id !== keepId); if (!keep || !drops.length) return null;
+      const topics = [...new Set([...keep.topics, ...drops.flatMap((m) => m.topics)])].slice(0, 3), strength = Math.min(20, keep.strength + drops.reduce((s, m) => s + m.strength, 0)), pinned = keep.pinned || drops.some((m) => m.pinned);
+      db.run("UPDATE memories SET topics = ?, strength = ?, pinned = ?, updated_at = ? WHERE id = ?", [topics.join(","), strength, pinned ? 1 : 0, now(), keepId]);
+      for (const m of drops) db.run("DELETE FROM memories WHERE id = ?", [m.id]);
+      save(); return { ok: true, merged: drops.length };
+    },
     deleteMemory: (id) => { db.run("DELETE FROM memories WHERE id = ?", [id]); save(); },
     clearMemories: () => { db.run("DELETE FROM memories"); save(); },
     countMemories: () => rows("SELECT count(*) AS n FROM memories")[0].n,

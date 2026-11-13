@@ -232,6 +232,24 @@ export function createApp({ root, db, dist = null }) {
       const r = db.importAll(b); if (r.error) return json(res, 400, r);
       setTimeout(() => void tick(), 500); return json(res, 200, r);
     }
+    if (pathname === "/api/memories/review" && req.method === "POST") {
+      const s = read(), out = { merges: db.duplicateGroups(), conflicts: [], conflictsError: null };
+      if (s.key && s.model) {
+        const texts = db.memoryTexts(60);
+        if (texts.length >= 2) try {
+          const sys = "Ты проверяешь список фактов о пользователе. Найди пары, которые ПРОТИВОРЕЧАТ друг другу (нельзя быть правдой обоим, например разные города проживания или разные должности). Похожие, но не противоречащие факты не включай. Верни ТОЛЬКО JSON вида {\"conflicts\":[{\"a\":id,\"b\":id,\"why\":\"коротко почему\"}]}. Если противоречий нет, верни {\"conflicts\":[]}.";
+          const txt = await askModel(s, s.model, sys, texts.map((m) => `${m.id}: ${m.text}`).join("\n"), 700), a = txt.indexOf("{"), b = txt.lastIndexOf("}"), ids = new Set(texts.map((m) => m.id));
+          const arr = a >= 0 && b > a ? JSON.parse(txt.slice(a, b + 1))?.conflicts : [];
+          out.conflicts = (Array.isArray(arr) ? arr : []).filter((c) => ids.has(Number(c?.a)) && ids.has(Number(c?.b)) && c.a !== c.b).slice(0, 20).map((c) => ({ a: { id: Number(c.a), text: texts.find((m) => m.id === Number(c.a)).text }, b: { id: Number(c.b), text: texts.find((m) => m.id === Number(c.b)).text }, why: String(c.why ?? "").slice(0, 160) }));
+        } catch (e) { out.conflictsError = e?.explained?.error ?? "Противоречия не проверены: ответ модели не распознан"; }
+      } else out.conflictsError = "Для поиска противоречий нужны ключ и модель Cloud.ru";
+      return json(res, 200, out);
+    }
+    if (pathname === "/api/memories/merge" && req.method === "POST") {
+      let b; try { b = await body(req); } catch { return json(res, 400, { error: "Некорректный запрос" }); }
+      const r = db.mergeMemories(Number(b.keep), (Array.isArray(b.drop) ? b.drop : []).map(Number)); if (!r) return json(res, 404, { error: "Нечего объединять" });
+      setTimeout(() => void tick(), 300); return json(res, 200, r);
+    }
     const mp = /^\/api\/memories\/(\d+)$/.exec(pathname);
     if (mp && req.method === "PUT") {
       let b; try { b = await body(req); } catch { return json(res, 400, { error: "Некорректный запрос" }); }
