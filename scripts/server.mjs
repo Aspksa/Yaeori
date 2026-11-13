@@ -241,7 +241,8 @@ export function createApp({ root, db, dist = null }) {
         if (parsed.protocol !== "https:") return json(res, 400, { error: "Адрес API должен начинаться с https://" });
         s.baseUrl = u.replace(/\/+$/, "");
       }
-      write(s);
+      write(s); embedAuto = { at: 0, model: "" };
+      setTimeout(() => void tick(), 300);
       return json(res, 200, view(s));
     }
     if (pathname === "/api/errors-guide" && req.method === "GET") return json(res, 200, { http: HTTP_GUIDE, net: NET_GUIDE, other: OTHER_GUIDE });
@@ -274,7 +275,16 @@ export function createApp({ root, db, dist = null }) {
     return json(res, 404, { error: "Не найдено" });
   }
 
-  return http.createServer((req, res) => {
+  // автоматически: векторы досчитываются сами (старт, каждые 10 минут, смена ключа или модели)
+  let tickBusy = false;
+  const tick = async () => {
+    const s = read(); if (tickBusy || !s.key || s.memory === false) return;
+    const st = db.vecStats(); if (!(st.total > st.indexed)) return;
+    tickBusy = true; try { for (let i = 0; i < 40; i++) { const n = await indexVectors(s, 128); if (!n) break; } } finally { tickBusy = false; }
+  };
+  setTimeout(() => void tick(), 4000).unref?.();
+  const iv = setInterval(() => void tick(), 600000); iv.unref?.();
+  const server = http.createServer((req, res) => {
     const pathname = (req.url ?? "/").split("?")[0];
     if (pathname.startsWith("/api/")) { api(req, res, pathname).catch(() => json(res, 500, { error: "Ошибка сервера" })); return; }
     if (!dist) { res.writeHead(404).end(); return; }
@@ -286,4 +296,6 @@ export function createApp({ root, db, dist = null }) {
     res.writeHead(200, { "content-type": TYPES[path.extname(f)] ?? "application/octet-stream", "x-content-type-options": "nosniff" });
     createReadStream(f).pipe(res);
   });
+  server.on("close", () => clearInterval(iv));
+  return server;
 }

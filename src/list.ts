@@ -41,9 +41,9 @@ export function mountList(root: HTMLElement, h: ListHandlers) {
   }
   function vecHtml() {
     const v = st.vec; if (!v) return "";
-    const pct = v.total ? Math.round((v.indexed / v.total) * 100) : 0, state = v.ok === false ? `<em class="bad">${esc(v.error || "Векторы не работают")}</em>` : v.indexed >= v.total && v.total ? "поиск по смыслу работает" : v.model ? `модель ${esc(v.model)}` : "модель не найдена";
+    const pct = v.total ? Math.round((v.indexed / v.total) * 100) : 0, state = v.ok === false ? `<em class="bad">${esc(v.error || "Векторы не работают")}</em>` : v.indexed < v.total ? "считаются автоматически…" : v.total ? "поиск по смыслу работает" : v.model ? `модель ${esc(v.model)}` : "модель не найдена";
     return `<div class="ls-vec"><div class="ls-vh"><b>Векторы</b><span>${v.indexed} / ${v.total}</span></div><div class="ls-bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></div>
-      <small>${state}</small><div class="ls-vb"><button type="button" class="ls-btn" data-build="1"${st.building || v.indexed >= v.total ? " disabled" : ""}>${st.building ? "Считаю…" : "Построить векторы"}</button>
+      <small>${state}</small><div class="ls-vb"><button type="button" class="ls-btn" data-build="1"${st.building || v.indexed >= v.total ? " disabled" : ""}>${st.building ? "Считаю…" : "Посчитать сейчас"}</button>
       <details><summary>Модель эмбеддингов</summary><input class="ls-em" type="text" value="${esc(v.model)}" placeholder="например bge-m3" spellcheck="false" aria-label="Модель эмбеддингов" /><button type="button" class="ls-btn" data-em="1">Сохранить</button></details></div></div>`;
   }
   function memHtml() {
