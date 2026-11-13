@@ -19,7 +19,7 @@ export type Col = "user" | "bot" | "accent" | "gold" | "mint";
 export interface EntityInfo { id: number; name: string; memories: number[] }
 interface Pal { bg: string; hubs: string[]; user: string; bot: string; line: string; text: string; muted: string; warn: string }
 const FIXED: Record<Exclude<MapTheme, "accent">, Pal> = {
-  night: { bg: "#07121d", hubs: ["#4fd1b0", "#f0a24a", "#8b7cf6", "#5aa0ff", "#7fe0c8", "#e8836a", "#b9a8ff", "#93c5fd"], user: "#4fd1b0", bot: "#8b7cf6", line: "rgba(110,190,200,.20)", text: "#d6ece8", muted: "#6f93a0", warn: "#f0a24a" },
+  night: { bg: "#000000", hubs: ["#4fd1b0", "#f0a24a", "#8b7cf6", "#5aa0ff", "#7fe0c8", "#e8836a", "#b9a8ff", "#93c5fd"], user: "#4fd1b0", bot: "#8b7cf6", line: "rgba(110,190,200,.20)", text: "#d6ece8", muted: "#6f93a0", warn: "#f0a24a" },
   ocean: { bg: "#0b1822", hubs: ["#4cc9a4", "#4aa8e8", "#7c9cff", "#e6c35c", "#f08c6a", "#b48cf0"], user: "#4cc9a4", bot: "#4aa8e8", line: "rgba(120,200,220,.22)", text: "#d4f1ea", muted: "#7fa9b3", warn: "#e6c35c" },
   neon: { bg: "#05050a", hubs: ["#d6ff3d", "#ff3dac", "#3dffe0", "#ffb13d", "#a35bff", "#3d8bff"], user: "#d6ff3d", bot: "#ff3dac", line: "rgba(255,255,255,.16)", text: "#f2f2f2", muted: "#9a9aa8", warn: "#ffb13d" },
   bordo: { bg: "#160a0c", hubs: ["#f0a35c", "#e05a6b", "#d9c27a", "#c97bb0", "#e8855c", "#a8c6a0"], user: "#f0a35c", bot: "#e05a6b", line: "rgba(255,170,150,.18)", text: "#f6e2db", muted: "#b38d86", warn: "#d9c27a" },
@@ -289,17 +289,9 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     ctx.fillStyle = pal.bg; ctx.fillRect(0, 0, w, h);
     const hubs = order.filter((n) => n.kind === "hub"), core = nodes.get("core")!, hue = (n: N) => pal.hubs[n.hue % pal.hubs.length]!, byKey = nodes;
     // фон: едва заметная сетка из шестиугольников
-    const hs = 46 * cam.k;
-    if (o.layout === "sectors") { // спокойный фон: мягкое свечение у центра вместо сетки
-      if (/^#[0-9a-f]{6}$/i.test(pal.hubs[0]!)) { const cc = toScreen(core.x, core.y), gg = ctx.createRadialGradient(cc.x, cc.y, 0, cc.x, cc.y, R * 1.15 * cam.k); gg.addColorStop(0, pal.hubs[0]! + "26"); gg.addColorStop(0.6, pal.hubs[0]! + "0d"); gg.addColorStop(1, pal.hubs[0]! + "00");
-      ctx.fillStyle = gg; ctx.fillRect(0, 0, w, h); }
-    } else if (hs > 12) {
-      ctx.strokeStyle = pal.line; ctx.globalAlpha = 0.25; ctx.lineWidth = 1; ctx.beginPath();
-      const hw = hs * Math.sqrt(3), ox = (w / 2 - cam.x * cam.k) % hw, oy = (h / 2 - cam.y * cam.k) % (hs * 1.5);
-      for (let row = -2, y = oy - hs * 3; y < h + hs; row++, y += hs * 1.5) for (let x = ox - hw * 2 + (row % 2 ? hw / 2 : 0); x < w + hw; x += hw) {
-        for (let v = 0; v < 3; v++) { const a = Math.PI / 6 + v * Math.PI / 3; ctx.moveTo(x + Math.cos(a) * hs, y + Math.sin(a) * hs); ctx.lineTo(x + Math.cos(a + Math.PI / 3) * hs, y + Math.sin(a + Math.PI / 3) * hs); }
-      }
-      ctx.stroke(); ctx.globalAlpha = 1;
+    if (o.layout === "sectors" && /^#[0-9a-f]{6}$/i.test(pal.hubs[0]!)) { // мягкое свечение у центра на тёмном фоне
+      const cc = toScreen(core.x, core.y), gg = ctx.createRadialGradient(cc.x, cc.y, 0, cc.x, cc.y, R * 1.15 * cam.k); gg.addColorStop(0, pal.hubs[0]! + "1a"); gg.addColorStop(0.6, pal.hubs[0]! + "08"); gg.addColorStop(1, pal.hubs[0]! + "00");
+      ctx.fillStyle = gg; ctx.fillRect(0, 0, w, h);
     }
     // круги-ориентиры
     const c0 = toScreen(core.x, core.y);
