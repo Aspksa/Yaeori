@@ -1,18 +1,14 @@
-import { createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
+import { getClusters, getAsOf, getContracts, getPairs, resolvePair as resolveEntityPair, getUnit, addAlias, removeAlias, getReminders, ackReminders, getHypotheses, getDisputes, getRecallCfg, resolveDispute, setRecallCfg, confirmMemory, correctMemory, getSleep, runSleep, createChat, deleteChat, getBrain, getConn, getGraph, getMessages, listChats, scanMemories, sendMessage, type ChatInfo, type GraphData, type Msg } from "./api";
+import { mountList } from "./list";
+import { esc as mdEsc, renderText } from "./md";
+export { renderText };
+import { buildVectors, compressMemories, forgetMemory, getEntities, getInactive, getVectors, mergeMemories, restoreMemory, reviewMemories, saveConn, updateMemory, type VecInfo } from "./api";
 import { AREA_OFF, DEFAULT_MAP, NEURON_OFF, MAP_THEMES, mountGraph, type GraphHandle, type Grouping, type Layout, type MapOptions, type MapTheme, type SysItem } from "./graph";
 
-const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
-/** Минимальная разметка: блоки кода, `код`, **жирный**, переносы строк. Всё остальное экранируется. */
-export function renderText(src: string): string {
-  const parts = src.split(/```/);
-  return parts.map((p, i) => {
-    if (i % 2) { const nl = p.indexOf("\n"); return `<pre><code>${esc(nl >= 0 && /^[\w+-]*$/.test(p.slice(0, nl).trim()) ? p.slice(nl + 1) : p)}</code></pre>`; }
-    return esc(p).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
-  }).join("");
-}
+const esc = mdEsc;
 
-const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v1";
-const LAYOUTS: [Layout, string][] = [["rings", "Кольца"], ["circle", "Круг"], ["hex", "Соты"], ["tile", "Плита"], ["hud", "HUD"], ["force", "Сила"]];
+const LAST = "yaeori:chat:v1", MAP_KEY = "yaeori:map:v3";
+const LAYOUTS: [Layout, string][] = [["sectors", "Сектора"], ["rings", "Кольца"], ["circle", "Круг"], ["hex", "Соты"], ["tile", "Плита"], ["hud", "HUD"], ["force", "Сила"]];
 const num = (v: unknown, lo: number, hi: number, d: number) => (typeof v === "number" && v >= lo && v <= hi ? v : d);
 function loadMap(): MapOptions {
   try {
@@ -32,11 +28,13 @@ let draft = "";
 export const homeView = () => `<div class="home">
   <section class="card viz" aria-label="Карта беседы">
     <div class="viz-head"><div class="grow"><small class="viz-stats" id="viz-stats"></small></div>
+      <button class="btn small" id="viz-list-toggle" type="button" aria-expanded="false" aria-controls="viz-list">☰ Список</button>
       <button class="btn small" id="viz-show" type="button" aria-pressed="false" title="Камера по очереди облетает чаты">▷ Показ</button>
       <button class="btn small" id="viz-toggle" type="button" aria-expanded="false" aria-controls="viz-panel">Настройки карты</button></div>
     <div class="viz-body"><canvas id="graph" role="img" aria-label="Карта мозга: темы, воспоминания и связи между ними"></canvas><div id="graph-tip" class="graph-tip" hidden></div>
       <div class="viz-empty muted" id="viz-empty" hidden><p id="viz-empty-text"></p><button class="btn small primary" id="viz-scan" type="button" hidden>Вспомнить из бесед</button><small id="viz-scan-status" role="status"></small></div>
       <div class="viz-legend muted" id="viz-legend"></div>
+      <aside class="viz-list" id="viz-list" hidden aria-label="Список бесед и воспоминаний"></aside>
       <aside class="viz-panel" id="viz-panel" hidden aria-label="Настройки карты">
         <input id="viz-search" type="search" placeholder="Найти на карте…" autocomplete="off" spellcheck="false" aria-label="Поиск по карте" />
         <h3>Раскладка</h3><div class="viz-grid" role="radiogroup" aria-label="Раскладка">${LAYOUTS.map(([id, t]) => `<button type="button" role="radio" aria-checked="false" data-layout="${id}">${t}</button>`).join("")}</div>
@@ -65,10 +63,28 @@ export function mountHome(): () => void {
   const form = $<HTMLFormElement>("chat-form"), stats = $("viz-stats"), empty = $("viz-empty");
   let chats: ChatInfo[] = [], current = 0, busy = false, ctrl: AbortController | null = null, dead = false;
   let map = loadMap();
-  const graph: GraphHandle = mountGraph($<HTMLCanvasElement>("graph"), $("graph-tip"), { onPick: (id) => void open(id), onCollapse: (ids) => { map = { ...map, collapsed: ids }; saveMap(map); },
-    onSystem: (id) => { if (id === "key" || id === "model" || id === "db") window.dispatchEvent(new CustomEvent("yaeori:goto", { detail: { page: "settings", section: id === "key" ? "conn" : id === "model" ? "model" : "memory" } })); else if (id === "palette") { panel.hidden = false; $("viz-toggle").setAttribute("aria-expanded", "true"); } },
+  const graph: GraphHandle = mountGraph($<HTMLCanvasElement>("graph"), $("graph-tip"), { onPick: (id) => void open(id), onMore: (id) => moreOf(id - AREA_OFF), onCollapse: (ids) => { map = { ...map, collapsed: ids }; saveMap(map); },
+    onSystem: (id) => { if (id.startsWith("chat:")) { void open(Number(id.slice(5))); graph.focus("chat:" + id.slice(5)); return; } if (id === "key" || id === "model" || id === "db") window.dispatchEvent(new CustomEvent("yaeori:goto", { detail: { page: "settings", section: id === "key" ? "conn" : id === "model" ? "model" : "memory" } })); else if (id === "palette") { panel.hidden = false; $("viz-toggle").setAttribute("aria-expanded", "true"); } },
     onShowEnd: () => { $("viz-show").setAttribute("aria-pressed", "false"); $("viz-show").textContent = "▷ Показ"; } }, map);
   const panel = $("viz-panel");
+  let lastBrain: GraphData | null = null;
+  let vec: VecInfo | null = null, building = false;
+  const list = mountList($("viz-list"), { more: (id) => moreOf(id), openChat: (id) => void open(id), focus: (t) => graph.focus(t), pin: (t) => graph.pin(t), kinds: (k) => graph.setLinkKinds(k),
+    edit: (id, p) => updateMemory(id, p).then(() => refreshGraph()), forget: (id) => forgetMemory(id).then(() => refreshGraph()),
+    review: () => reviewMemories(), merge: (k, d, hs) => mergeMemories(k, d, hs).then(() => refreshGraph()),
+    compress: (ids, text, topic) => compressMemories(ids, text, topic).then(() => refreshGraph()),
+    inactive: () => getInactive().then((r) => r.items), entities: () => getEntities().then((r) => r.items), unit: (id) => getUnit(id), contracts: () => getContracts(), pairs: () => getPairs().then((r) => r.items), resolvePair: (a, b, same) => resolveEntityPair(a, b, same).then((r) => { void refreshGraph(); return r; }), alias: (id, w, rm) => (rm ? removeAlias(id, w).then(() => ({})) : addAlias(id, w).then((r) => { void refreshGraph(); return r; })), restore: (id) => restoreMemory(id).then(() => refreshGraph()),
+    clusters: () => getClusters(), hypotheses: () => getHypotheses().then((r) => r.items), confirm: (id) => confirmMemory(id).then((r) => { void refreshGraph(); return r; }), correct: (id, t) => correctMemory(id, t).then((r) => { void refreshGraph(); return r; }), asOf: (d, q) => getAsOf(d, q), recallCfg: () => getRecallCfg(), setRecallCfg: (c) => setRecallCfg(c), disputes: () => getDisputes().then((r) => r.items), resolve: (a, b, k) => resolveDispute(a, b, k).then(() => refreshGraph()),
+    sleepInfo: () => getSleep(), sleep: () => runSleep().then((r) => { void refreshGraph(); return r; }),
+    build: () => { building = true; syncList(); void buildVectors().then((v) => { vec = v; }, () => {}).finally(() => { building = false; syncList(); void refreshGraph(); }); },
+    setEmbedModel: (m) => void saveConn({ embedModel: m }).then(() => { vec = null; return getVectors(); }).then((v) => { vec = v; }, () => {}).finally(syncList) });
+  let vecTimer = 0;
+  const pollVec = async () => { // пока векторы досчитываются сами, панель обновляется
+    try { vec = await getVectors(); syncList(); } catch { return; }
+    if (!dead && vec && vec.ok !== false && vec.indexed < vec.total && !vecTimer) vecTimer = window.setTimeout(() => { vecTimer = 0; void pollVec(); }, 4000);
+  };
+  const syncList = () => list.update({ chats, brain: lastBrain, current, vec, building });
+  $("viz-list-toggle").addEventListener("click", (e) => { const l = $("viz-list"); l.hidden = !l.hidden; (e.currentTarget as HTMLElement).setAttribute("aria-expanded", String(!l.hidden)); });
   const syncPanel = () => {
     document.querySelectorAll<HTMLElement>("[data-layout]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.layout === map.layout)));
     document.querySelectorAll<HTMLElement>("[data-maptheme]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.maptheme === map.theme)));
@@ -112,7 +128,7 @@ export function mountHome(): () => void {
   };
   const hello = () => { thread.innerHTML = ""; bubble("assistant", "Здравствуйте! Я Yaeori. О чём поговорим?"); };
 
-  $("viz-legend").innerHTML = `<i class="dot you"></i> свежая <i class="dot long"></i> долгая <i class="dot fade"></i> забывается <i class="dot bot sq"></i> беседа <span class="viz-hint">колесо — масштаб · перетаскивание — сдвиг</span>`;
+  $("viz-legend").innerHTML = `<span>цвет — тема</span><span><i class="dot you"></i> свежая</span><span><i class="dot long"></i> долгая</span><span><i class="dot fade"></i> забывается</span><span><i class="dot bot sq"></i> беседа</span>`;
   $("lb-gchat").textContent = "По темам и чатам"; $("lb-gday").textContent = "По дням"; $("lb-links").textContent = "Связи между воспоминаниями";
   const mergeMap = (b: GraphData, c: GraphData): GraphData => ({
     stats: b.stats,
@@ -120,13 +136,16 @@ export function mountHome(): () => void {
     messages: [...c.messages, ...b.messages.map((m) => ({ ...m, id: NEURON_OFF + m.id, chatId: AREA_OFF + m.chatId }))],
     links: [...c.links, ...b.links.map((l) => ({ ...l, a: NEURON_OFF + l.a, b: NEURON_OFF + l.b }))],
   });
+  /** Крупная тема на карте показана не целиком: по запросу подгружаем её остальные воспоминания. */
+  const openTopics = new Set<string>();
+  const moreOf = (areaId: number) => { const t = lastBrain?.chats.find((c) => c.id === areaId)?.title; if (!t || openTopics.has(t)) return; openTopics.add(t); void refreshGraph(); };
   async function refreshGraph() {
     try {
-      const [br, ch] = await Promise.all([getBrain().catch(() => null), getGraph()]); if (dead) return;
+      const [br, ch] = await Promise.all([getBrain([...openTopics]).catch(() => null), getGraph()]); if (dead) return;
       const g = br ? mergeMap(br, ch) : ch, nn = br?.messages.length ?? 0;
-      graph.update(g); graph.select(current || null);
+      graph.update(g); void getEntities().then((r) => { if (!dead) graph.setEntities(r.items); }, () => { /* без сущностей карта работает */ }); graph.select(current || null); lastBrain = br; syncList(); void pollVec();
       const st = g.stats, chatMsgs = ch.messages.length;
-      stats.innerHTML = `<i class="live"></i><span${st ? ` title="${st.next ? `До следующего уровня: ${st.next - st.memories}` : "Высший уровень"}"` : ""}>${nn} воспом. · ${st?.topics ?? 0} тем · ${chatMsgs} сообщ. · ${ch.chats.length} чатов${st ? ` · «${esc(st.levelName)}»` : ""}</span>`;
+      stats.innerHTML = `<i class="live"></i><span${st ? ` title="${st.next ? `До следующего уровня: ${st.next - st.memories}` : "Высший уровень"}"` : ""}>${st?.memories ?? nn} воспом. · ${st?.topics ?? 0} тем · ${chatMsgs} сообщ. · ${ch.chats.length} чатов${st ? ` · «${esc(st.levelName)}»` : ""}</span>`;
       empty.hidden = g.messages.length > 0;
       $("viz-empty-text").textContent = "Пока пусто. Карта растёт, пока вы общаетесь: Yaeori запоминает факты и копит беседы.";
       $("viz-scan").hidden = nn > 0 || chats.length === 0;
@@ -137,7 +156,8 @@ export function mountHome(): () => void {
         { id: "model", label: "Модель", detail: c?.model || "не выбрана", ok: !!c?.model, icon: "spark" },
         { id: "db", label: "Память", detail: c?.memory === false ? "выключена" : `${nn} воспомин., ${chatMsgs} сообщ.`, ok: c?.memory !== false, icon: "db" },
         { id: "chats", label: "Чаты", detail: String(chats.length), ok: true, icon: "chat" },
-        { id: "palette", label: "Тема карты", detail: theme, ok: true, icon: "palette" }];
+        { id: "palette", label: "Тема карты", detail: theme, ok: true, icon: "palette" },
+        ...chats.slice(0, 60).map((x): SysItem => ({ id: "chat:" + x.id, label: x.title, detail: `${x.count} сообщ.`, ok: true, icon: "chat", group: "chat", chatId: x.id, on: x.id === current }))];
       graph.setSystem(sys);
     } catch { /* карта необязательна */ }
   }
@@ -148,7 +168,7 @@ export function mountHome(): () => void {
     btn.disabled = false;
   });
   async function refreshChats() {
-    chats = await listChats(); if (dead) return;
+    chats = await listChats(); if (dead) return; syncList();
     select.innerHTML = (current ? "" : `<option value="0">Новый чат</option>`) + chats.map((c) => `<option value="${c.id}">${esc(c.title)}</option>`).join("");
     select.value = String(current);
   }
@@ -177,25 +197,55 @@ export function mountHome(): () => void {
     if (thread.querySelector(".msg.assistant:only-child")) thread.innerHTML = "";
     bubble("user", renderText(text));
     const out = bubble("assistant", '<span class="typing" aria-label="Печатает"><i></i><i></i><i></i></span>');
-    let acc = "", frame = 0, failed = false;
-    const paint = () => { frame = 0; out.innerHTML = renderText(acc); thread.scrollTop = thread.scrollHeight; };
+    // Плавный вывод: на экран идёт не весь накопленный текст сразу, а растущий «хвост» — скорость зависит от отставания.
+    let acc = "", shown = 0, frame = 0, failed = false;
+    const paint = () => {
+      frame = 0;
+      const back = acc.length - shown; if (back > 0) shown += Math.min(back, Math.max(1, Math.ceil(back / 14)));
+      out.innerHTML = renderText(acc.slice(0, shown), shown < acc.length || !finished); thread.scrollTop = thread.scrollHeight;
+      if (shown < acc.length) frame = requestAnimationFrame(paint);
+    };
+    let finished = false;
     const my = new AbortController(); ctrl = my; setBusy(true);
+    let answered = false; graph.flow(["chat:" + id, "core"], "user"); graph.think(true);
     try {
       await sendMessage(id, text, (e) => {
         if (e.user) void refreshGraph();
-        if (e.delta) { acc += e.delta; if (!frame) frame = requestAnimationFrame(paint); }
+        if (e.recalled?.length) {
+          e.recalled.slice(0, 8).forEach((m, i) => graph.flow(["mem:" + m.id, "core", "chat:" + id], m.hop ? "accent" : "bot", 200 + i * 150));
+          const n = document.createElement("div"); n.className = "msg notice"; const nSess = e.recalled.filter((m) => m.session).length, shown = e.recalled.slice(0, 3).map((m) => m.text.replace(/\.$/, "")).join(" · ");
+          const head = `Вспомнила (${e.recalled.length}${nSess ? `, из этой беседы ${nSess}` : ""}): ${shown.length > 140 ? shown.slice(0, 139) + "…" : shown}`;
+          // каждое воспоминание можно подтвердить («верно») или исправить: так память учится на ответах
+          const det = document.createElement("details"), sm = document.createElement("summary"); sm.textContent = head; det.append(sm);
+          for (const m of e.recalled.slice(0, 8)) {
+            const row = document.createElement("div"); row.className = "rc-row"; const t = document.createElement("span"); t.textContent = (m.disputed ? "⚠ спорно: " : "") + m.text;
+            const ok = document.createElement("button"); ok.type = "button"; ok.className = "rc-b"; ok.textContent = "✓ верно"; ok.title = "Подтвердить: воспоминание стало сильнее";
+            const ed = document.createElement("button"); ed.type = "button"; ed.className = "rc-b"; ed.textContent = "✎ исправить"; ed.title = "Заменить правильной версией (старая останется в истории)";
+            ok.onclick = () => { ok.disabled = true; void confirmMemory(m.id).then(() => { ok.textContent = "✓ учла"; void refreshGraph(); }, () => { ok.disabled = false; }); };
+            ed.onclick = () => { const v = window.prompt("Как правильно?", m.text); if (v && v.trim() && v.trim() !== m.text) void correctMemory(m.id, v.trim()).then((r) => { if (r.ok) { t.textContent = v.trim(); ed.textContent = "✎ исправлено"; ed.disabled = true; ok.disabled = true; void refreshGraph(); } }, () => {}); };
+            row.append(t, ok, ed); det.append(row);
+          }
+          n.append(det); thread.insertBefore(n, out);
+        }
+        if (e.delta) { if (!answered) { answered = true; graph.think(false); graph.flow(["core", "chat:" + id], "bot"); } acc += e.delta; if (!frame) frame = requestAnimationFrame(paint); }
+        if (e.tool) { const n = document.createElement("div"); n.className = "msg notice"; n.textContent = "🔧 " + e.tool.text; thread.insertBefore(n, out); if (e.tool.changed) void refreshGraph(); }
         if (e.notice) { const n = document.createElement("div"); n.className = "msg notice"; n.textContent = e.notice; thread.insertBefore(n, out); }
-        if (e.error) { failed = true; out.className = "msg error"; out.innerHTML = errorHtml(e); }
-        if (e.done) { if (frame) { cancelAnimationFrame(frame); frame = 0; } paint(); if (ctrl === my) setBusy(false); }
+        if (e.check?.length) { const n = document.createElement("div"); n.className = "msg notice warn"; n.textContent = "⚠ Проверка: ответ может спорить с тем, что я знаю — " + e.check.map((c) => `«${c.text.slice(0, 80)}»${c.why ? " (" + c.why + ")" : ""}`).join("; "); thread.appendChild(n); }
+        if (e.error) { graph.think(false); failed = true; out.className = "msg error"; out.innerHTML = errorHtml(e); }
+        if (e.done) { finished = true; if (frame) { cancelAnimationFrame(frame); frame = 0; } shown = acc.length; paint(); if (ctrl === my) setBusy(false); }
         if (e.brain) {
           const b = e.brain, n = document.createElement("div"); n.className = "msg notice";
-          if (b.error) n.textContent = `Память не обновилась: ${b.error.error ?? "ошибка"}`; else if (b.added || b.strengthened) n.textContent = `Мозг: запомнила ${b.added ?? 0}, закрепила ${b.strengthened ?? 0}`;
+          if (b.error) n.textContent = `Память не обновилась: ${b.error.error ?? "ошибка"}`; else if (b.added || b.strengthened || b.updated || b.closed || b.doubted) n.textContent = `Мозг: запомнила ${b.added ?? 0}, закрепила ${b.strengthened ?? 0}${b.updated ? `, обновила ${b.updated}` : ""}${b.closed ? `, закрыла устаревшее ${b.closed}` : ""}${b.doubted ? `, усомнилась в ${b.doubted}` : ""}`;
           if (n.textContent) { thread.appendChild(n); thread.scrollTop = thread.scrollHeight; }
-          void refreshGraph();
+          void refreshGraph().then(() => {
+            (b.addedIds ?? []).forEach((x, i) => graph.flow(["chat:" + id, "core", "mem:" + x], "mint", i * 180));
+            if (b.strengthenedIds?.length) graph.flash(b.strengthenedIds.map((x) => "mem:" + x), "gold");
+          });
         }
       }, my.signal);
     } catch (e) { if ((e as Error).name !== "AbortError") { failed = true; out.className = "msg error"; out.innerHTML = errorHtml({ error: (e as Error).message }); } }
-    if (frame) cancelAnimationFrame(frame);
+    graph.think(false); if (frame) cancelAnimationFrame(frame);
+    finished = true; shown = acc.length;
     if (!failed) paint(); else if (!acc) { /* сообщение об ошибке уже в пузыре */ }
     if (ctrl === my) { ctrl = null; if (!dead) setBusy(false); } if (!dead) { void refreshChats(); void refreshGraph(); }
   }
@@ -223,5 +273,15 @@ export function mountHome(): () => void {
     } catch { bubble("error", "Сервер не отвечает. Запустите Yaeori через Yaeori.bat."); }
   })();
 
-  return () => { dead = true; ctrl?.abort(); graph.destroy(); };
+  /** Сроки: раз в несколько минут спрашиваем, не подошёл ли срок у чего-то записанного. */
+  const pollReminders = async () => {
+    try {
+      const r = await getReminders(); if (dead || !r.items.length) return;
+      for (const x of r.items) { const n = document.createElement("div"); n.className = "msg notice warn"; n.textContent = `⏰ ${x.overdue ? "Срок прошёл" : "Скоро срок"} (${x.due}): ${x.text}`; thread.appendChild(n); }
+      thread.scrollTop = thread.scrollHeight; await ackReminders(r.items.map((x) => x.id));
+    } catch { /* без напоминаний чат работает */ }
+  };
+  setTimeout(() => void pollReminders(), 1500); const remTimer = setInterval(() => void pollReminders(), 300000);
+
+  return () => { dead = true; clearInterval(remTimer); clearTimeout(vecTimer); ctrl?.abort(); graph.destroy(); };
 }

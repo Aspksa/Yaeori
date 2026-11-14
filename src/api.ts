@@ -1,4 +1,4 @@
-export interface Conn { keySet: boolean; model: string; fallbackModel: string; memory: boolean; baseUrl: string }
+export interface Conn { keySet: boolean; model: string; fallbackModel: string; memory: boolean; tools?: boolean; embedModel?: string; baseUrl: string }
 export interface Explained { error?: string; hint?: string; code?: number | string; detail?: string }
 export interface CheckResult extends Explained { ok: boolean; models?: string[]; modelFound?: boolean | null; fallbackFound?: boolean | null }
 export interface TestResult extends Explained { ok: boolean; model?: string; ms?: number; text?: string }
@@ -12,7 +12,7 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
   return data;
 }
 export const getConn = () => call<Conn>("/api/settings");
-export const saveConn = (patch: { key?: string | null; model?: string; fallbackModel?: string; memory?: boolean; baseUrl?: string }) =>
+export const saveConn = (patch: { key?: string | null; model?: string; fallbackModel?: string; memory?: boolean; tools?: boolean; embedModel?: string; baseUrl?: string }) =>
   call<Conn>("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
 export const testModel = (model: string) => call<TestResult>("/api/test-model", { method: "POST", body: JSON.stringify({ model }) });
 export const getGuide = () => call<Guide>("/api/errors-guide");
@@ -22,9 +22,9 @@ export interface ChatInfo { id: number; title: string; createdAt: string; count:
 export interface Msg { id: number; role: "user" | "assistant"; content: string; at: string }
 export interface BrainStats { memories: number; topics: number; links: number; level: number; levelName: string; next: number | null }
 export interface GraphData {
-  mode?: "memory"; stats?: BrainStats; chats: { id: number; title: string; count: number }[];
-  messages: { id: number; chatId: number; role: "user" | "assistant"; preview: string; size: number; at: string; tier?: string; hits?: number; src?: number }[];
-  links: { a: number; b: number; w: number; words: string[] }[];
+  mode?: "memory"; stats?: BrainStats; chats: { id: number; title: string; count: number; hidden?: number; summary?: string }[];
+  messages: { id: number; chatId: number; role: "user" | "assistant"; preview: string; size: number; at: string; tier?: string; pinned?: boolean; past?: boolean; disputed?: boolean; conf?: number; against?: number; quote?: string | null; dueAt?: string | null; hits?: number; src?: number; topics?: string[] }[];
+  links: { a: number; b: number; w: number; words: string[]; kinds?: string[] }[];
 }
 export interface MemoryItem { id: number; text: string; topics: string[]; hits: number; at: string }
 export interface MemoryList { memory: boolean; total: number; items: MemoryItem[] }
@@ -35,13 +35,38 @@ export const createChat = () => call<{ id: number }>("/api/chats", { method: "PO
 export const getMessages = (id: number) => call<Msg[]>(`/api/chats/${id}`);
 export const deleteChat = (id: number) => call<{ ok: true }>(`/api/chats/${id}`, { method: "DELETE" });
 export const getGraph = () => call<GraphData>("/api/graph");
-export const getBrain = () => call<GraphData>("/api/brain");
+export const getBrain = (open: string[] = []) => call<GraphData>("/api/brain" + (open.length ? "?open=" + encodeURIComponent(open.join(",")) : ""));
 export const getMemories = () => call<MemoryList>("/api/memories");
 export const forgetMemory = (id: number) => call<{ ok: true }>(`/api/memories/${id}`, { method: "DELETE" });
 export const forgetAll = () => call<{ ok: true }>("/api/memories", { method: "DELETE" });
+export const updateMemory = (id: number, patch: { text?: string; topics?: string[] | string; pinned?: boolean }) => call<{ ok?: boolean; error?: string }>(`/api/memories/${id}`, { method: "PUT", body: JSON.stringify(patch) });
+export const exportAll = () => call<Record<string, unknown>>("/api/export");
+export const importAll = (data: unknown) => call<{ ok?: boolean; chats?: number; messages?: number; memories?: number; error?: string }>("/api/import", { method: "POST", body: JSON.stringify(data) });
+export interface Review { merges: { keep: number; items: { id: number; text: string; hits: number; pinned: boolean }[] }[]; conflicts: { a: { id: number; text: string }; b: { id: number; text: string }; why: string }[]; conflictsError: string | null; compress?: { topic: string; ids: number[]; items: string[]; summary: string }[] }
+export const reviewMemories = () => call<Review>("/api/memories/review", { method: "POST", body: "{}" });
+export const mergeMemories = (keep: number, drop: number[], history = false) => call<{ ok?: boolean; error?: string }>("/api/memories/merge", { method: "POST", body: JSON.stringify({ keep, drop, history }) });
+export interface Inactive { id: number; text: string; state: "archived" | "replaced"; topics: string[]; at: string; replacedBy: number | null; replacedText: string | null }
+export interface Entity { id: number; name: string; type?: string | null; typeLabel?: string | null; parent?: string | null; aliases?: string[]; memories: number[]; relations: { s: string; r: string; o: string; past: boolean }[] }
+export interface UnitInfo { id: number; name: string; type: string | null; typeLabel: string | null; path: { id: number; name: string }[]; children: { id: number; name: string; type: string | null; typeLabel: string | null; n: number }[]; events: { id: number; text: string; when: string; past: boolean; dueAt: string | null; conf: number }[]; links?: { id: number; name: string; type: string | null; typeLabel: string | null; rel: string; dir: string }[]; money?: { total: number | null; paid: number | null; remain: number | null; term: string | null } | null; total: number; next: { id: number; text: string; due: string } | null }
+export interface ContractRow { id: number; name: string; party: string | null; responsible: string | null; total: number | null; paid: number | null; remain: number | null; term: string | null; nextDue: string | null; overdue: boolean; expiring: boolean; hasAct: boolean; acts: number; addenda: number; invoices: number; facts: number; year: string | null }
+export interface ContractsInfo { items: ContractRow[]; totals: { all: { total: number; paid: number; n: number }; byParty: { name: string; total: number; paid: number; n: number }[]; byYear: { name: string; total: number; paid: number; n: number }[] } }
+export interface EntityPair { a: { id: number; name: string; n: number }; b: { id: number; name: string; n: number }; typeLabel: string | null }
+export const getContracts = () => call<ContractsInfo>("/api/contracts");
+export const getPairs = () => call<{ items: EntityPair[] }>("/api/entity-pairs");
+export const resolvePair = (a: number, b: number, same: boolean) => call<{ ok?: boolean; error?: string }>("/api/entity-pairs", { method: "POST", body: JSON.stringify({ a, b, same }) });
+export const getUnit = (id: number) => call<UnitInfo>("/api/units/" + id);
+export const addAlias = (id: number, alias: string) => call<{ ok?: boolean; linked?: number; error?: string }>("/api/entities/" + id + "/alias", { method: "POST", body: JSON.stringify({ alias }) });
+export const removeAlias = (id: number, alias: string) => call<{ ok: boolean }>("/api/entities/" + id + "/alias", { method: "DELETE", body: JSON.stringify({ alias }) });
+export const getEntities = () => call<{ items: Entity[] }>("/api/entities");
+export const getInactive = () => call<{ items: Inactive[] }>("/api/memories/inactive");
+export const restoreMemory = (id: number) => call<{ ok?: boolean; error?: string }>(`/api/memories/${id}/restore`, { method: "POST", body: "{}" });
+export const compressMemories = (ids: number[], text: string, topic: string) => call<{ ok?: boolean; error?: string }>("/api/memories/compress", { method: "POST", body: JSON.stringify({ ids, text, topic }) });
+export interface VecInfo { total: number; indexed: number; model: string; ok: boolean | null; error: string; done?: number }
+export const getVectors = () => call<VecInfo>("/api/vectors");
+export const buildVectors = () => call<VecInfo & Explained>("/api/vectors/build", { method: "POST", body: "{}" });
 export const scanMemories = () => call<ScanResult>("/api/memories/scan", { method: "POST", body: "{}" });
 
-export type StreamEvent = Explained & { user?: number; delta?: string; assistant?: number; done?: boolean; notice?: string; brain?: { added?: number; strengthened?: number; error?: Explained } };
+export type StreamEvent = Explained & { user?: number; delta?: string; assistant?: number; done?: boolean; notice?: string; check?: { id: number; text: string; why: string }[]; tool?: { name: string; text: string; changed?: boolean }; recalled?: { id: number; text: string; hop?: boolean; session?: boolean; past?: boolean; disputed?: boolean }[]; brain?: { added?: number; strengthened?: number; updated?: number; closed?: number; doubted?: number; same?: number; addedIds?: number[]; strengthenedIds?: number[]; error?: Explained } };
 /** Отправляет сообщение и отдаёт события ответа по мере прихода. Отмена через signal. */
 export async function sendMessage(id: number, text: string, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
   const r = await fetch(`/api/chats/${id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }), signal });
@@ -58,3 +83,24 @@ export async function sendMessage(id: number, text: string, onEvent: (e: StreamE
     }
   }
 }
+export interface SleepInfo { at: string; merged: number; compressed: number; reflected?: number; archived: number; backup: string; stale?: { checked: number; ok: number }; healed?: number; disputesLeft?: number; people?: number; topicsMerged?: number; topicsSplit?: number; quality?: number; rolledBack?: boolean }
+export interface Hypothesis { id: number; text: string; topics: string[]; src: string; at: string; proof?: { id: number; text: string }[] }
+export interface Reminder { id: number; text: string; due: string; overdue: boolean }
+export const getReminders = () => call<{ items: Reminder[] }>("/api/reminders");
+export const ackReminders = (ids: number[]) => call<{ ok: boolean }>("/api/reminders", { method: "POST", body: JSON.stringify({ ids }) });
+export interface AsOf { date: string; total: number; items: { id: number; text: string; topics: string[]; learnedAt: string; validFrom: string | null; validTo: string | null; replaced: boolean }[] }
+export const getHypotheses = () => call<{ items: Hypothesis[] }>("/api/hypotheses");
+export const getAsOf = (date: string, q: string) => call<AsOf>(`/api/asof?date=${encodeURIComponent(date)}&q=${encodeURIComponent(q)}`);
+export const getSleep = () => call<{ last: SleepInfo | null; sleeping: boolean }>("/api/sleep");
+export const runSleep = () => call<SleepInfo>("/api/sleep", { method: "POST", body: "{}" });
+export const confirmMemory = (id: number) => call<{ ok: true }>(`/api/memories/${id}/confirm`, { method: "POST", body: "{}" });
+export const correctMemory = (id: number, text: string) => call<{ ok?: boolean; error?: string }>(`/api/memories/${id}/correct`, { method: "POST", body: JSON.stringify({ text }) });
+export interface RecallCfg { weights: { vec: number; lex: number; imp: number }; rerank: boolean; check?: boolean }
+export interface Dispute { a: { id: number; text: string }; b: { id: number; text: string }; reason: string }
+export const getRecallCfg = () => call<RecallCfg>("/api/recall");
+export const setRecallCfg = (c: { weights?: RecallCfg["weights"]; rerank?: boolean; check?: boolean }) => call<RecallCfg>("/api/recall", { method: "PUT", body: JSON.stringify(c) });
+export const getDisputes = () => call<{ items: Dispute[] }>("/api/disputes");
+export const resolveDispute = (a: number, b: number, keep: number | null) => call<{ ok: true }>("/api/disputes/resolve", { method: "POST", body: JSON.stringify({ a, b, keep }) });
+export interface Cluster { id: number; size: number; label: string; topics: { t: string; n: number }[]; mix: boolean; tight: number; top: { id: number; text: string }[]; ids: number[] }
+export interface Clusters { items: Cluster[]; withVec: number; total: number }
+export const getClusters = () => call<Clusters>("/api/clusters");

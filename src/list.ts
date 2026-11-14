@@ -1,0 +1,237 @@
+import type { AsOf, ChatInfo, Clusters, Dispute, Hypothesis, Entity, UnitInfo, ContractsInfo, EntityPair, Inactive, RecallCfg, Review, SleepInfo, VecInfo } from "./api";
+import type { GraphData } from "./api";
+
+type Tab = "chats" | "memory" | "sense" | "links" | "contracts";
+type Filter = "all" | "fresh" | "long" | "fading";
+export interface ListState { chats: ChatInfo[]; brain: GraphData | null; current: number; vec: VecInfo | null; building?: boolean }
+export interface ListHandlers { more(areaId: number): void; openChat(id: number): void; focus(token: string): void; pin(tokens: string[]): void; kinds(k: string[]): void; edit(id: number, patch: { text?: string; topics?: string; pinned?: boolean }): Promise<unknown>; forget(id: number): Promise<unknown>; review(): Promise<Review>; merge(keep: number, drop: number[], history?: boolean): Promise<unknown>; compress(ids: number[], text: string, topic: string): Promise<unknown>; inactive(): Promise<Inactive[]>; entities(): Promise<Entity[]>; unit(id: number): Promise<UnitInfo>; contracts(): Promise<ContractsInfo>; pairs(): Promise<EntityPair[]>; resolvePair(a: number, b: number, same: boolean): Promise<{ error?: string }>; alias(id: number, word: string, remove?: boolean): Promise<{ error?: string }>; restore(id: number): Promise<unknown>; clusters(): Promise<Clusters>; hypotheses(): Promise<Hypothesis[]>; confirm(id: number): Promise<unknown>; correct(id: number, text: string): Promise<unknown>; asOf(date: string, q: string): Promise<AsOf>; recallCfg(): Promise<RecallCfg>; setRecallCfg(c: { weights?: RecallCfg["weights"]; rerank?: boolean; check?: boolean }): Promise<RecallCfg>; disputes(): Promise<Dispute[]>; resolve(a: number, b: number, keep: number | null): Promise<unknown>; sleepInfo(): Promise<{ last: SleepInfo | null; sleeping: boolean }>; sleep(): Promise<SleepInfo>; build(): void; setEmbedModel(m: string): void }
+
+const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+const DAY = 86400000;
+const bucket = (iso: string) => {
+  const d = Date.parse(iso), t = new Date(); t.setHours(0, 0, 0, 0);
+  const age = Math.floor((t.getTime() - d) / DAY) + 1;
+  if (d >= t.getTime()) return "Сегодня"; if (age <= 1) return "Вчера"; if (age <= 7) return "На этой неделе"; if (age <= 31) return "В этом месяце"; return "Раньше";
+};
+const ago = (iso: string) => {
+  const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  if (!(m >= 0)) return ""; if (m < 1) return "только что"; if (m < 60) return `${m} мин назад`; if (m < 1440) return `${Math.floor(m / 60)} ч назад`; const d = Math.floor(m / 1440); return d < 31 ? `${d} дн назад` : new Date(iso).toLocaleDateString("ru-RU");
+};
+const TIER: Record<string, [string, string]> = { fresh: ["you", "свежая"], long: ["long", "долгая"], fading: ["fade", "забывается"], plain: ["bot", "обычная"] };
+const FILTERS: [Filter, string][] = [["all", "Все"], ["fresh", "Свежие"], ["long", "Долгие"], ["fading", "Забываются"]];
+
+/** Список слева от карты: беседы по датам и воспоминания по темам. Клик — перелёт камеры к узлу. */
+export function mountList(root: HTMLElement, h: ListHandlers) {
+  let tab: Tab = "chats", q = "", filter: Filter = "all", st: ListState = { chats: [], brain: null, current: 0, vec: null };
+  let clu: Clusters | null = null, cluAsked = false, cluStale = false, cluBusy = false; const cluOpen = new Set<number>();
+  let hyp: Hypothesis[] | null = null, hypAsked = false, hypStale = false, asDate = "", asQ = "", asRes: AsOf | null = null, asBusy = false, asErr = "";
+  let cfg: RecallCfg | null = null, cfgAsked = false, cfgNote = "", disp: Dispute[] | null = null, dispAsked = false;
+  let slp: { last: SleepInfo | null; sleeping: boolean } | null = null, slpBusy = false, slpAsked = false;
+  const units = new Map<number, UnitInfo | "load" | "err">(); let aliasNote = ""; let con: ContractsInfo | null = null, conAsked = false, conStale = false, pairs: EntityPair[] = [], conFilter = "all"; const conOpen = new Set<number>();
+  const closed = new Set<number>(), pages = new Map<number, number>(), relOpen = new Set<number>(); let locked: string | null = null, editing: number | null = null, rev: Review | null = null, revBusy = false, revNote = "", archOpen = false, inact: Inactive[] | null = null, ents: Entity[] | null = null, entLoading = false; const entOpen = new Set<number>(), kindsOn = new Set(["topic", "sense", "chat", "entity", "habit"]);
+  root.innerHTML = `<div class="ls-top"><div class="ls-tabs" role="tablist" aria-label="Что показывать в списке"></div>
+    <input class="ls-q" type="search" placeholder="Найти…" autocomplete="off" spellcheck="false" aria-label="Поиск по списку" /><div class="ls-chips" role="radiogroup" aria-label="Фильтр памяти" hidden></div></div>
+    <div class="ls-body" tabindex="-1"></div>`;
+  const tabs = root.querySelector<HTMLElement>(".ls-tabs")!, input = root.querySelector<HTMLInputElement>(".ls-q")!, chips = root.querySelector<HTMLElement>(".ls-chips")!, body = root.querySelector<HTMLElement>(".ls-body")!;
+
+  function chatsHtml() {
+    const rows = [...st.chats].sort((a, b) => b.id - a.id).filter((c) => !q || c.title.toLowerCase().includes(q));
+    if (!rows.length) return `<p class="ls-none">${q ? "Ничего не найдено." : "Бесед пока нет."}</p>`;
+    let last = "", out = "";
+    for (const c of rows) {
+      const b = bucket(c.createdAt); if (b !== last) { out += `<h4 class="ls-h">${b}</h4>`; last = b; }
+      out += `<button type="button" class="ls-row${c.id === st.current ? " on" : ""}" data-chat="${c.id}"><span class="ls-t">${esc(c.title)}</span><span class="ls-m">${c.count} сообщ. · ${ago(c.createdAt)}</span></button>`;
+    }
+    return out;
+  }
+  const textOf = (id: number) => st.brain?.messages.find((m) => m.id === id)?.preview ?? "…";
+  const linksOf = (id: number) => (st.brain?.links ?? []).filter((l) => l.a === id || l.b === id).sort((x, y) => y.w - x.w);
+  const why = (words: string[]) => words.length ? words.map((w) => (w === "по смыслу" || w === "из одной беседы" ? w : w.startsWith("@") ? "«" + esc(w.slice(1)) + "»" : "тема «" + esc(w) + "»")).join(" · ") : "связаны";
+  const KINDS: [string, string][] = [["topic", "Тема"], ["sense", "Смысл"], ["chat", "Беседа"], ["entity", "Сущность"], ["habit", "Привычка"]];
+  const kindsOf = (l: { kinds?: string[] }) => (l.kinds?.length ? l.kinds : ["topic"]);
+  const fmtRub = (n: number | null | undefined) => (n == null ? "—" : Math.round(n).toLocaleString("ru-RU") + " ₽");
+  function unitBlock(u: UnitInfo) {
+    const money = u.money ? `<p class="ls-next">Цена ${fmtRub(u.money.total)} · оплачено ${fmtRub(u.money.paid)} · остаток ${fmtRub(u.money.remain)}${u.money.term ? ` · срок до ${esc(u.money.term)}` : ""}</p>` : "";
+    const links = u.links?.length ? `<p class="ls-kids">Связано: ${u.links.slice(0, 10).map((l) => `${esc(l.name)}${l.typeLabel ? ` <em>${esc(l.typeLabel)}</em>` : ""} <em>${esc(l.rel)}</em>`).join(" · ")}</p>` : "";
+    return money + links + `${u.path.length ? `<p class="ls-path">${u.path.map((p) => esc(p.name)).join(" › ")} › <b>${esc(u.name)}</b></p>` : ""}${u.next ? `<p class="ls-next">⏰ Ближайший срок ${esc(u.next.due)}: ${esc(u.next.text)}</p>` : ""}${u.children.length ? `<p class="ls-kids">В составе: ${u.children.slice(0, 12).map((c) => `${esc(c.name)}${c.typeLabel ? ` <em>${esc(c.typeLabel)}</em>` : ""} ${c.n}`).join(" · ")}</p>` : ""}${u.events.length ? `<div class="ls-tl">${u.events.map((x) => `<button type="button" class="ls-row ls-sub${x.past ? " past" : ""}" data-mem="${x.id}"><span class="ls-t"><em>${esc(x.when)}</em> ${esc(x.text)}${x.dueAt ? ` · ⏰ ${esc(x.dueAt)}` : ""}${x.conf < 0.5 ? " · ❓" : ""}</span></button>`).join("")}</div>${u.total > u.events.length ? `<small>Показаны последние ${u.events.length} из ${u.total}</small>` : ""}` : ""}`;
+  }
+  function ensureUnit(id: number) { if (!units.has(id)) { units.set(id, "load"); void h.unit(id).then((x) => { units.set(id, x); }, () => { units.set(id, "err"); }).finally(render); } return units.get(id); }
+  function contractsHtml() {
+    if (!conAsked || conStale) { conAsked = true; conStale = false; void Promise.all([h.contracts(), h.pairs()]).then(([c, p]) => { con = c; pairs = p; }, () => {}).finally(render); }
+    if (!con) return `<p class="ls-none">Собираю договоры…</p>`;
+    const pr = pairs.length ? `<div class="ls-vec"><div class="ls-vh"><b>Похожие номера</b><span>${pairs.length}</span></div><small>Номера отличаются одной цифрой. Склеивать их или это разные?</small>${pairs.map((p) => `<div class="ls-card warn"><div class="ls-ct">${esc(p.typeLabel ?? "")}</div><p>${esc(p.a.name)} <em>${p.a.n}</em></p><p>${esc(p.b.name)} <em>${p.b.n}</em></p><div class="ls-eb"><button type="button" class="ls-btn" data-pair-same="${p.a.id}:${p.b.id}">Это один</button><button type="button" class="ls-btn" data-pair-diff="${p.a.id}:${p.b.id}">Разные</button></div></div>`).join("")}</div>` : "";
+    const T = con.totals, tot = `<p class="ls-note">Договоров ${T.all.n} · сумма ${fmtRub(T.all.total)} · оплачено ${fmtRub(T.all.paid)}</p>${T.byParty.length > 1 || T.byYear.length > 1 ? `<details class="ls-vec"><summary><b>Итоги</b></summary>${T.byParty.map((x) => `<p class="ls-kids">${esc(x.name)}: ${x.n} · ${fmtRub(x.total)}</p>`).join("")}${T.byYear.map((x) => `<p class="ls-kids">${esc(String(x.name))} год: ${x.n} · ${fmtRub(x.total)}</p>`).join("")}</details>` : ""}`;
+    const F: [string, string][] = [["all", "Все"], ["soon", "Скоро срок"], ["over", "Просрочены"], ["noact", "Без акта"]];
+    const chipsH = `<div class="ls-kinds" role="group" aria-label="Фильтр договоров">${F.map(([k, t]) => `<button type="button" class="ls-k" data-cf="${k}" aria-pressed="${conFilter === k}">${t}</button>`).join("")}</div>`;
+    const rows = con.items.filter((c) => (conFilter === "soon" ? c.expiring : conFilter === "over" ? c.overdue : conFilter === "noact" ? !c.hasAct : true) && (!q || (c.name + " " + (c.party ?? "") + " " + (c.responsible ?? "")).toLowerCase().includes(q)));
+    const body2 = rows.map((c) => {
+      const open = conOpen.has(c.id), u = open ? ensureUnit(c.id) : null;
+      return `<div class="ls-ent"><button type="button" class="ls-row" data-con="${c.id}" aria-expanded="${open}"><i class="dot sq"></i><span class="ls-t">${esc(c.name)}${c.party ? ` <span class="ls-par">· ${esc(c.party)}</span>` : ""}</span><span class="ls-m">${fmtRub(c.total)}${c.remain != null ? ` · ост. ${fmtRub(c.remain)}` : ""}${c.nextDue ? ` · ⏰ ${esc(c.nextDue)}` : ""}${c.overdue ? " · просрочен" : ""}${!c.hasAct ? " · без акта" : ""}</span></button>${open ? `<p class="ls-kids">${c.responsible ? `Ответственный: ${esc(c.responsible)} · ` : ""}доп. соглашений ${c.addenda} · актов ${c.acts} · счетов ${c.invoices}</p>${u && typeof u === "object" ? unitBlock(u) : "<small>Собираю историю…</small>"}` : ""}</div>`;
+    }).join("");
+    return pr + tot + chipsH + (body2 || `<p class="ls-none">${con.items.length ? "Ничего не подошло." : "Договоров пока нет. Они появятся, когда в беседе прозвучит «договор №…»."}</p>`);
+  }
+  function entitiesHtml() {
+    if (!ents) { if (!entLoading) { entLoading = true; void h.entities().then((x) => { ents = x; }, () => { ents = []; }).finally(() => { entLoading = false; render(); }); } return ""; }
+    const rows = ents.filter((e) => !q || e.name.toLowerCase().includes(q)).slice(0, 40); if (!rows.length) return "";
+    return `<h4 class="ls-h">Сущности · ${ents.length}</h4>` + rows.map((e) => {
+      const open = entOpen.has(e.id), rel = e.relations.length ? e.relations.map((r) => `<p class="${r.past ? "past" : ""}">${esc(r.s)} <em>${esc(r.r)}</em> ${esc(r.o)}${r.past ? " · раньше" : ""}</p>`).join("") : "";
+      const mems = open ? e.memories.map((id) => `<button type="button" class="ls-row ls-sub" data-mem="${id}"><span class="ls-t">${esc(textOf(id))}</span></button>`).join("") : "";
+      const u = open ? units.get(e.id) : null; if (open && !u) { units.set(e.id, "load"); void h.unit(e.id).then((x) => { units.set(e.id, x); }, () => { units.set(e.id, "err"); }).finally(render); }
+      const hist = u && typeof u === "object" ? unitBlock(u) : open && u === "load" ? `<small>Собираю историю…</small>` : "";
+      const ali = open ? `<div class="ls-al"><small>Другие названия:</small> ${(e.aliases ?? []).map((a) => `<button type="button" class="ls-chip" data-unal="${e.id}" data-aw="${esc(a)}" title="Убрать">${esc(a)} ×</button>`).join("")}<form data-alias="${e.id}"><input type="text" maxlength="30" placeholder="своё слово: бортовой" aria-label="Другое название" /><button type="submit" class="ls-btn">Добавить</button></form>${aliasNote ? `<small>${esc(aliasNote)}</small>` : ""}</div>` : "";
+      return `<div class="ls-ent"><button type="button" class="ls-row" data-ent="${e.id}" aria-expanded="${open}"><i class="dot sq"></i><span class="ls-t">${esc(e.name)}${e.typeLabel ? ` <em class="ls-ty">${esc(e.typeLabel)}</em>` : ""}${e.parent ? ` <span class="ls-par">· ${esc(e.parent)}</span>` : ""}</span><span class="ls-m">${e.memories.length}</span></button>${open ? hist + rel + ali + mems : ""}</div>`;
+    }).join("");
+  }
+  function linksHtml() {
+    const b = st.brain, all = b?.links ?? []; if (!all.length) return `<p class="ls-none">Связей пока нет. Они появляются, когда воспоминания из разных тем делят тему или близки по смыслу.</p>`;
+    const chipsHtml = `<div class="ls-kinds" role="group" aria-label="Типы связей">${KINDS.map(([k, t]) => `<button type="button" class="ls-k ${k}" data-kind="${k}" aria-pressed="${kindsOn.has(k)}"><i></i>${t}</button>`).join("")}</div>`;
+    const rows = [...all].filter((l) => kindsOf(l).some((k) => kindsOn.has(k))).sort((x, y) => y.w - x.w).filter((l) => !q || (textOf(l.a) + " " + textOf(l.b)).toLowerCase().includes(q)).slice(0, 80);
+    if (!rows.length) return chipsHtml + `<p class="ls-none">Ничего не найдено.</p>`;
+    return chipsHtml + entitiesHtml() + `<h4 class="ls-h">Самые крепкие связи · ${all.length}</h4>` + rows.map((l) => `<button type="button" class="ls-row ls-link" data-pair="${l.a}:${l.b}"><span class="ls-kk">${kindsOf(l).map((k) => `<i class="${k}"></i>`).join("")}</span><span class="ls-t">${esc(textOf(l.a))}</span><span class="ls-x">↕ ${why(l.words)}</span><span class="ls-t">${esc(textOf(l.b))}</span><span class="ls-m">сила ${l.w.toFixed(1)}</span></button>`).join("");
+  }
+  const loadDisp = () => void h.disputes().then((x) => { disp = x; render(); }, () => {});
+  function disputeHtml() {
+    if (!dispAsked) { dispAsked = true; loadDisp(); }
+    if (!disp?.length) return "";
+    return `<div class="ls-vec"><div class="ls-vh"><b>Спорное</b><span>${disp.length}</span></div><small>Эти факты не могут быть верны оба. Пока вы не решили, ассистент говорит о них осторожно.</small>${disp.map((d, i) => `<div class="ls-card warn"><div class="ls-ct">${esc(d.reason)}</div><p>${esc(d.a.text)}</p><p>${esc(d.b.text)}</p><div class="ls-eb"><button type="button" class="ls-btn" data-dk-a="${i}">Верно первое</button><button type="button" class="ls-btn" data-dk-b="${i}">Верно второе</button><button type="button" class="ls-btn" data-dk-both="${i}">Оба верны</button></div></div>`).join("")}</div>`;
+  }
+  function cfgHtml() {
+    if (!cfgAsked) { cfgAsked = true; void h.recallCfg().then((x) => { cfg = x; render(); }, () => {}); }
+    if (!cfg) return "";
+    const sl = (k: "vec" | "lex" | "imp", label: string) => `<label class="ls-sl">${label}<input type="range" min="0" max="2" step="0.1" value="${cfg!.weights[k]}" data-w="${k}" aria-label="${label}" /></label>`;
+    return `<details class="ls-vec"><summary><b>Как искать</b></summary><small>Что важнее при вспоминании. По умолчанию всё поровну.</small>${sl("vec", "По смыслу")}${sl("lex", "По словам")}${sl("imp", "Важность и свежесть")}
+      <label class="ls-ck"><input type="checkbox" data-rr="1"${cfg.rerank ? " checked" : ""} /> Переранжировать моделью (точнее, но каждый ответ чуть дольше)</label><label class="ls-ck"><input type="checkbox" data-ck="1"${cfg.check !== false ? " checked" : ""} /> Проверять ответ по фактам (предупредит, если ответ спорит с тем, что известно)</label><div class="ls-vb"><button type="button" class="ls-btn" data-cfg="1">Сохранить</button>${cfgNote ? `<small>${esc(cfgNote)}</small>` : ""}</div></details>`;
+  }
+  function hypHtml() {
+    if (!hypAsked || hypStale) { hypAsked = true; hypStale = false; void h.hypotheses().then((x) => { hyp = x; }, () => {}).finally(render); }
+    if (!hyp?.length) return "";
+    return `<div class="ls-vec"><div class="ls-vh"><b>Проверьте выводы</b></div><small>Это не сказано прямо: вывод, сделанный по вашим фактам, или запись, которую модель сделала сама. Пока вы не подтвердили, они весят меньше и подаются как предположение.</small>${hyp.map((x) => `<div class="ls-card"><p>${esc(x.text)}</p><small>${x.src === "reflect" ? "вывод по теме" : "записано в беседе"} «${esc(x.topics[0] ?? "")}»</small>${x.proof?.length ? `<small class="ls-proof">Основано на: ${x.proof.map((p) => esc(p.text)).join(" · ")}</small>` : ""}<div class="ls-eb"><button type="button" class="ls-btn" data-hok="${x.id}">Верно</button><button type="button" class="ls-btn" data-hed="${x.id}">Исправить</button><button type="button" class="ls-btn" data-hno="${x.id}">Неверно</button></div></div>`).join("")}</div>`;
+  }
+  function asofHtml() {
+    const rows = asRes ? asRes.items.slice(0, 15).map((m) => `<div class="ls-mem"><button type="button" class="ls-row" data-clm="${m.id}"><span class="ls-t">${esc(m.text)}</span></button>${m.replaced ? `<small>позже заменено</small>` : m.validTo ? `<small>верно до ${esc(m.validTo)}</small>` : ""}</div>`).join("") + (asRes.total > 15 ? `<small>Показано 15 из ${asRes.total}</small>` : "") : "";
+    return `<div class="ls-vec"><div class="ls-vh"><b>Срез на дату</b></div><small>Что я уже знала в тот день и что тогда ещё было верно.</small><div class="ls-vb"><input type="date" class="ls-em" data-asd value="${esc(asDate)}" aria-label="Дата"><input type="search" class="ls-em" data-asq value="${esc(asQ)}" placeholder="О чём (необязательно)" aria-label="О чём"><button type="button" class="ls-btn" data-asgo="1"${asBusy || !asDate ? " disabled" : ""}>${asBusy ? "Ищу…" : "Показать"}</button></div>${asErr ? `<small class="ls-warn">${esc(asErr)}</small>` : ""}${asRes ? (rows || `<p class="ls-none">На эту дату ничего не знала.</p>`) : ""}</div>`;
+  }
+  function senseHtml() {
+    if (!cluAsked || cluStale) { cluAsked = true; cluStale = false; cluBusy = true; void h.clusters().then((x) => { clu = x; }, () => {}).finally(() => { cluBusy = false; render(); }); }
+    if (!clu) return hypHtml() + asofHtml() + `<p class="ls-none">${cluBusy ? "Считаю скопления…" : "Скопления не загрузились."}</p>`;
+    const note = `<p class="ls-note">Группы по смыслу, независимо от тем. С вектором ${clu.withVec} из ${clu.total}.${cluBusy ? " Обновляю…" : ""}</p>`;
+    if (!clu.items.length) return hypHtml() + asofHtml() + note + `<p class="ls-none">Скопления появятся, когда посчитаются векторы (нужно хотя бы 6 воспоминаний с вектором).</p>`;
+    return hypHtml() + asofHtml() + note + clu.items.map((c) => {
+      const open = cluOpen.has(c.id);
+      return `<section class="ls-g"><button type="button" class="ls-gh" data-cl="${c.id}" aria-expanded="${open}"><b>${esc(c.label)}</b><span>${c.size}</span></button>${open ? `<p class="ls-sum">${c.mix ? "Разные темы: " : "Темы: "}${c.topics.map((t) => `${esc(t.t)} ${t.n}`).join(" · ")}${c.mix ? ". Возможно, их стоит объединить." : ""}</p>${c.top.map((m) => `<div class="ls-mem"><button type="button" class="ls-row" data-clm="${m.id}"><span class="ls-t">${esc(m.text)}</span></button></div>`).join("")}<button type="button" class="ls-more" data-clp="${c.id}">Показать всё скопление на карте (${Math.min(c.size, c.ids.length)})</button>` : ""}</section>`;
+    }).join("");
+  }
+  function sleepHtml() {
+    if (!slpAsked) { slpAsked = true; void h.sleepInfo().then((x) => { slp = x; render(); }, () => {}); }
+    const l = slp?.last, txt = l ? `Последний раз ${ago(l.at)}: слито ${l.merged}, сжато ${l.compressed}, забыто ${l.archived}${l.reflected ? `, новых выводов ${l.reflected}` : ""}${l.stale?.checked ? `, самопроверка ${l.stale.ok}/${l.stale.checked}` : ""}${l.quality != null ? `, качество ${l.quality}%` : ""}${l.healed ? `, споров решено ${l.healed}` : ""}${l.people ? `, людей склеено ${l.people}` : ""}${l.topicsMerged || l.topicsSplit ? `, темы: влито ${l.topicsMerged ?? 0}, разделено ${l.topicsSplit ?? 0}` : ""}${l.rolledBack ? ", ночные правки ухудшили качество — откатила" : ""}${l.backup ? `, копия ${esc(l.backup)}` : ""}.` : "Ещё не спала. Сама убирается по ночам.";
+    return `<div class="ls-vec"><div class="ls-vh"><b>Сон</b></div><small>${txt}</small><div class="ls-vb"><button type="button" class="ls-btn" data-sleep="1"${slpBusy || slp?.sleeping ? " disabled" : ""}>${slpBusy || slp?.sleeping ? "Убираюсь…" : "Выспаться сейчас"}</button></div></div>`;
+  }
+  function reviewHtml() {
+    const head = `<div class="ls-vec"><div class="ls-vh"><b>Порядок в памяти</b></div><small>Ищет дубли и факты, которые спорят друг с другом.</small><div class="ls-vb"><button type="button" class="ls-btn" data-review="1"${revBusy ? " disabled" : ""}>${revBusy ? "Проверяю…" : "Проверить дубли и противоречия"}</button></div>${revNote ? `<small>${esc(revNote)}</small>` : ""}</div>`;
+    if (!rev) return head;
+    const merges = rev.merges.map((g, gi) => `<div class="ls-card"><div class="ls-ct">Похожие, ${g.items.length}</div>${g.items.map((i) => `<p class="${i.id === g.keep ? "keep" : ""}">${i.pinned ? "📌 " : ""}${esc(i.text)} <em>×${i.hits}</em></p>`).join("")}<div class="ls-eb"><button type="button" class="ls-btn" data-mg="${gi}">Объединить в одно</button><button type="button" class="ls-btn" data-skip-mg="${gi}">Оставить как есть</button></div></div>`).join("");
+    const conf = rev.conflicts.map((c, ci) => `<div class="ls-card warn"><div class="ls-ct">Спорят друг с другом</div><p>${esc(c.a.text)}</p><p>${esc(c.b.text)}</p>${c.why ? `<small>${esc(c.why)}</small>` : ""}<div class="ls-eb"><button type="button" class="ls-btn" data-keep-a="${ci}">Верно первое</button><button type="button" class="ls-btn" data-keep-b="${ci}">Верно второе</button><button type="button" class="ls-btn" data-skip-cf="${ci}">Оба верны</button></div></div>`).join("");
+    const comp = (rev.compress ?? []).map((g, gi) => `<div class="ls-card"><div class="ls-ct">Сжать ${g.ids.length} старых («${esc(g.topic)}») в одно</div><p class="keep">${esc(g.summary)}</p><small>${g.items.map((x) => esc(x)).join(" · ").slice(0, 300)}</small><div class="ls-eb"><button type="button" class="ls-btn" data-cp="${gi}">Сжать</button><button type="button" class="ls-btn" data-skip-cp="${gi}">Оставить как есть</button></div></div>`).join("");
+    const none = !merges && !conf && !comp ? `<p class="ls-none">Дублей, противоречий и старых россыпей не найдено.</p>` : "";
+    return head + merges + conf + comp + (rev.conflictsError ? `<small class="ls-warn">${esc(rev.conflictsError)}</small>` : "") + none;
+  }
+  function archiveHtml() {
+    const list = !archOpen ? "" : !inact ? `<small>Загружаю…</small>` : !inact.length ? `<p class="ls-none">Архив пуст.</p>` : inact.map((x) => `<div class="ls-card${x.state === "replaced" ? " warn" : ""}"><p>${esc(x.text)}</p><small>${x.state === "archived" ? "затухло — давно не вспоминалось" : x.replacedText ? "заменено: " + esc(x.replacedText) : "заменено новым"}</small><div class="ls-eb"><button type="button" class="ls-btn" data-restore="${x.id}">Вернуть</button></div></div>`).join("");
+    return `<div class="ls-vec"><div class="ls-vh"><b>Архив и история</b></div><small>Затухшие и замещённые воспоминания. Закреплённые не затухают.</small><div class="ls-vb"><button type="button" class="ls-btn" data-arch="1">${archOpen ? "Скрыть" : "Показать"}</button></div></div>${list}`;
+  }
+  function vecHtml() {
+    const v = st.vec; if (!v) return "";
+    const pct = v.total ? Math.round((v.indexed / v.total) * 100) : 0, state = v.ok === false ? `<em class="bad">${esc(v.error || "Векторы не работают")}</em>` : v.indexed < v.total ? "считаются автоматически…" : v.total ? "поиск по смыслу работает" : v.model ? `модель ${esc(v.model)}` : "модель не найдена";
+    return `<div class="ls-vec"><div class="ls-vh"><b>Векторы</b><span>${v.indexed} / ${v.total}</span></div><div class="ls-bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></div>
+      <small>${state}</small><div class="ls-vb"><button type="button" class="ls-btn" data-build="1"${st.building || v.indexed >= v.total ? " disabled" : ""}>${st.building ? "Считаю…" : "Посчитать сейчас"}</button>
+      <details><summary>Модель эмбеддингов</summary><input class="ls-em" type="text" value="${esc(v.model)}" placeholder="например bge-m3" spellcheck="false" aria-label="Модель эмбеддингов" /><button type="button" class="ls-btn" data-em="1">Сохранить</button></details></div></div>`;
+  }
+  function memHtml() {
+    const b = st.brain; if (!b || !b.messages.length) return `<p class="ls-none">Мозг пока пуст. Он растёт, пока вы общаетесь.</p>`;
+    const strip = vecHtml() + disputeHtml() + cfgHtml() + sleepHtml() + reviewHtml() + archiveHtml();
+    const areas = new Map(b.chats.map((c) => [c.id, c.title] as const)), by = new Map<number, typeof b.messages>();
+    for (const m of b.messages) {
+      if (filter !== "all" && m.tier !== filter) continue;
+      if (q && !(m.preview.toLowerCase().includes(q) || (areas.get(m.chatId) ?? "").toLowerCase().includes(q))) continue;
+      (by.get(m.chatId) ?? by.set(m.chatId, []).get(m.chatId)!).push(m);
+    }
+    if (!by.size) return strip + `<p class="ls-none">Ничего не найдено.</p>`;
+    const groups = [...by].sort((a, c) => c[1].length - a[1].length);
+    return strip + groups.map(([id, ms]) => {
+      const open = q || filter !== "all" || !closed.has(id), lim = q || filter !== "all" ? ms.length : pages.get(id) ?? 30, meta = b.chats.find((c) => c.id === id);
+      const items = ms.sort((x, y) => (y.hits ?? 1) - (x.hits ?? 1) || Date.parse(y.at) - Date.parse(x.at)).slice(0, lim).map((m) => {
+        const [dot, label] = TIER[m.tier ?? "plain"]!;
+        const rel = linksOf(m.id), open2 = relOpen.has(m.id);
+        if (editing === m.id) return `<form class="ls-edit" data-form="${m.id}"><textarea rows="3" maxlength="200" aria-label="Текст воспоминания" required>${esc(m.preview)}</textarea><input type="text" value="${esc((m.topics ?? []).join(", "))}" placeholder="темы через запятую" aria-label="Темы" required /><div class="ls-eb"><button type="submit" class="ls-btn">Сохранить</button><button type="button" class="ls-btn" data-cancel="1">Отмена</button><button type="button" class="ls-btn bad" data-forget="${m.id}">Забыть</button></div></form>`;
+        return `<div class="ls-mem${locked === "mem:" + m.id ? " lock" : ""}"><button type="button" class="ls-row" data-mem="${m.id}" title="${esc(label + (m.quote ? " · из ваших слов: «" + m.quote + "»" : ""))}"><i class="dot ${dot}"></i><span class="ls-t">${m.pinned ? "📌 " : ""}${esc(m.preview)}</span><span class="ls-m">×${m.hits ?? 1} · ${ago(m.at)}${m.dueAt ? ` · ⏰ ${esc(m.dueAt)}` : ""}${(m.conf ?? 1) < 0.5 ? " · ❓" : ""}</span></button><span class="ls-acts"><button type="button" class="ls-go${m.pinned ? " on" : ""}" data-pin="${m.id}" aria-pressed="${Boolean(m.pinned)}" aria-label="${m.pinned ? "Открепить" : "Закрепить, чтобы не забывалось"}" title="${m.pinned ? "Открепить" : "Закрепить: не забывается"}">📌</button><button type="button" class="ls-go" data-edit="${m.id}" aria-label="Править воспоминание" title="Править">✎</button>${m.src ? `<button type="button" class="ls-go" data-src="${m.src}" aria-label="Открыть беседу, из которой пришло воспоминание" title="Открыть беседу">↗</button>` : ""}</span>${rel.length ? `<button type="button" class="ls-rel" data-rel="${m.id}" aria-expanded="${open2}">⟷ связи ${rel.length}</button>` : ""}${open2 ? `<div class="ls-sub">${rel.slice(0, 6).map((l) => { const o = l.a === m.id ? l.b : l.a; return `<button type="button" class="ls-sr" data-mem="${o}"><span>${esc(textOf(o))}</span><em>${why(l.words)}</em></button>`; }).join("")}</div>` : ""}</div>`;
+      }).join("");
+      const more = ms.length > lim ? `<button type="button" class="ls-more" data-pg="${id}">Показать ещё ${Math.min(30, ms.length - lim)}</button>` : meta?.hidden ? `<button type="button" class="ls-more" data-more="${id}">Загрузить ещё ${Math.min(meta.hidden, 150)} из памяти</button>` : "";
+      return `<section class="ls-g"><button type="button" class="ls-gh" data-area="${id}" aria-expanded="${open}"><b>${esc(areas.get(id) ?? "—")}</b><span>${meta?.count ?? ms.length}</span></button>${open && meta?.summary ? `<p class="ls-sum">${esc(meta.summary)}</p>` : ""}${open ? items + more : ""}</section>`;
+    }).join("");
+  }
+  function render() {
+    const nm = st.brain?.messages.length ?? 0;
+    tabs.innerHTML = (["chats", "memory", "sense", "links", "contracts"] as Tab[]).map((t) => `<button type="button" role="tab" aria-selected="${t === tab}" data-tab="${t}">${t === "chats" ? "Беседы" : t === "memory" ? "Память" : t === "contracts" ? "Договоры" : t === "sense" ? "Смысл" : "Связи"}<em>${t === "chats" ? st.chats.length : t === "memory" ? nm : t === "sense" ? clu?.items.length ?? "·" : st.brain?.links.length ?? 0}</em></button>`).join("");
+    chips.hidden = tab !== "memory";
+    root.querySelector(".ls-q")!.toggleAttribute("hidden", false);
+    chips.innerHTML = FILTERS.map(([id, t]) => `<button type="button" role="radio" aria-checked="${id === filter}" data-f="${id}">${t}</button>`).join("");
+    const top = body.scrollTop; body.innerHTML = tab === "chats" ? chatsHtml() : tab === "memory" ? memHtml() : tab === "sense" ? senseHtml() : tab === "contracts" ? contractsHtml() : linksHtml(); body.scrollTop = top;
+  }
+  root.addEventListener("click", (e) => {
+    const t = (e.target as HTMLElement).closest<HTMLElement>("[data-con],[data-cf],[data-pair-same],[data-pair-diff],[data-unal],[data-hok],[data-hed],[data-hno],[data-asgo],[data-cl],[data-clm],[data-clp],[data-cfg],[data-dk-a],[data-dk-b],[data-dk-both],[data-sleep],[data-pg],[data-more],[data-tab],[data-f],[data-chat],[data-mem],[data-src],[data-area],[data-build],[data-em],[data-rel],[data-pair],[data-kind],[data-pin],[data-edit],[data-cancel],[data-forget],[data-review],[data-mg],[data-skip-mg],[data-keep-a],[data-keep-b],[data-skip-cf],[data-cp],[data-skip-cp],[data-arch],[data-restore],[data-ent]"); if (!t) return;
+    const d = t.dataset;
+    if (d.review) { revBusy = true; revNote = ""; render(); void h.review().then((r) => { rev = r; }, (e: Error) => { revNote = e.message; }).finally(() => { revBusy = false; render(); }); }
+    else if (d.mg) { const g = rev?.merges[Number(d.mg)]; if (g) { rev!.merges.splice(Number(d.mg), 1); void h.merge(g.keep, g.items.filter((i) => i.id !== g.keep).map((i) => i.id)); render(); } }
+    else if (d.skipMg) { rev?.merges.splice(Number(d.skipMg), 1); render(); }
+    else if (d.keepA || d.keepB) { const i = Number(d.keepA ?? d.keepB), c = rev?.conflicts[i]; if (c) { rev!.conflicts.splice(i, 1); const [win, lose] = d.keepA !== undefined ? [c.a, c.b] : [c.b, c.a]; void h.merge(win.id, [lose.id], true); render(); } }
+    else if (d.cp) { const g = rev?.compress?.[Number(d.cp)]; if (g) { rev!.compress!.splice(Number(d.cp), 1); void h.compress(g.ids, g.summary, g.topic); render(); } }
+    else if (d.skipCp) { rev?.compress?.splice(Number(d.skipCp), 1); render(); }
+    else if (d.arch) { archOpen = !archOpen; if (archOpen) { void h.inactive().then((x) => { inact = x; render(); }); } render(); }
+    else if (d.restore) { inact = inact?.filter((x) => x.id !== Number(d.restore)) ?? null; void h.restore(Number(d.restore)); render(); }
+    else if (d.skipCf) { rev?.conflicts.splice(Number(d.skipCf), 1); render(); }
+    else if (d.con) { const id = Number(d.con); if (conOpen.has(id)) conOpen.delete(id); else conOpen.add(id); render(); }
+    else if (d.cf) { conFilter = d.cf; render(); }
+    else if (d.pairSame || d.pairDiff) { const [x, y] = String(d.pairSame ?? d.pairDiff).split(":").map(Number); void h.resolvePair(x!, y!, Boolean(d.pairSame)).finally(() => { conStale = true; ents = null; units.clear(); render(); }); }
+    else if (d.unal) { void h.alias(Number(d.unal), d.aw ?? "", true).then(() => { aliasNote = ""; ents = null; units.delete(Number(d.unal)); }).finally(render); }
+    else if (d.ent) { const id = Number(d.ent), e = ents?.find((x) => x.id === id); if (entOpen.has(id)) { entOpen.delete(id); locked = null; h.pin([]); } else { entOpen.clear(); entOpen.add(id); if (e) { locked = "ent:" + id; h.pin(e.memories.map((m) => "mem:" + m)); h.focus("mem:" + e.memories[0]); } } render(); }
+    else if (d.pin) { const m = st.brain?.messages.find((x) => x.id === Number(d.pin)); void h.edit(Number(d.pin), { pinned: !m?.pinned }); }
+    else if (d.edit) { editing = Number(d.edit); render(); root.querySelector<HTMLTextAreaElement>(".ls-edit textarea")?.focus(); }
+    else if (d.cancel) { editing = null; render(); }
+    else if (d.forget) { if (confirm("Забыть это воспоминание?")) { editing = null; void h.forget(Number(d.forget)); } }
+    else if (d.kind) { if (kindsOn.has(d.kind)) kindsOn.delete(d.kind); else kindsOn.add(d.kind); h.kinds([...kindsOn]); render(); }
+    else if (d.build) h.build();
+    else if (d.em) h.setEmbedModel(root.querySelector<HTMLInputElement>(".ls-em")?.value.trim() ?? "");
+    else if (d.dkA !== undefined || d.dkB !== undefined || d.dkBoth !== undefined) { const i = Number(d.dkA ?? d.dkB ?? d.dkBoth), x = disp?.[i]; if (x) { disp!.splice(i, 1); void h.resolve(x.a.id, x.b.id, d.dkBoth !== undefined ? null : d.dkA !== undefined ? x.a.id : x.b.id); render(); } }
+    else if (d.hok) { const id = Number(d.hok); hyp = hyp?.filter((x) => x.id !== id) ?? null; void h.confirm(id); render(); }
+    else if (d.hed) { const id = Number(d.hed), x = hyp?.find((y) => y.id === id), v = x ? window.prompt("Как правильно?", x.text) : null; if (x && v && v.trim() && v.trim() !== x.text) { hyp = hyp!.filter((y) => y.id !== id); void h.correct(id, v.trim()); render(); } }
+    else if (d.hno) { const id = Number(d.hno); hyp = hyp?.filter((x) => x.id !== id) ?? null; void h.forget(id); render(); }
+    else if (d.asgo !== undefined) { if (!asDate) return; asBusy = true; asErr = ""; render(); void h.asOf(asDate, asQ).then((r) => { asRes = r; }, (e: Error) => { asErr = e.message; asRes = null; }).finally(() => { asBusy = false; render(); }); }
+    else if (d.cl) { const id = Number(d.cl); if (cluOpen.has(id)) cluOpen.delete(id); else cluOpen.add(id); render(); }
+    else if (d.clm) { const tk = "mem:" + d.clm; h.focus(tk); locked = tk; h.pin([tk]); }
+    else if (d.clp) { const c = clu?.items.find((x) => x.id === Number(d.clp)); if (c) { locked = "cl:" + c.id; h.pin(c.ids.map((i) => "mem:" + i)); h.focus("mem:" + c.ids[0]); } }
+    else if (d.cfg) { const w = { vec: 1, lex: 1, imp: 1 }; root.querySelectorAll<HTMLInputElement>("[data-w]").forEach((el) => { w[el.dataset.w as "vec" | "lex" | "imp"] = Number(el.value); }); const rerank = root.querySelector<HTMLInputElement>("[data-rr]")?.checked ?? false, check = root.querySelector<HTMLInputElement>("[data-ck]")?.checked ?? true; void h.setRecallCfg({ weights: w, rerank, check }).then((x) => { cfg = x; cfgNote = "Сохранено"; }, () => { cfgNote = "Не удалось сохранить"; }).finally(render); }
+    else if (d.sleep) { slpBusy = true; render(); void h.sleep().then((x) => { slp = { last: x, sleeping: false }; }, () => {}).finally(() => { slpBusy = false; render(); }); }
+    else if (d.pg) { pages.set(Number(d.pg), (pages.get(Number(d.pg)) ?? 30) + 30); render(); }
+    else if (d.more) { h.more(Number(d.more)); }
+    else if (d.tab) { tab = d.tab as Tab; render(); }
+    else if (d.f) { filter = d.f as Filter; render(); }
+    else if (d.chat) { h.openChat(Number(d.chat)); h.focus("chat:" + d.chat); }
+    else if (d.rel) { const id = Number(d.rel); if (relOpen.has(id)) relOpen.delete(id); else relOpen.add(id); render(); }
+    else if (d.pair) { const [a, c] = d.pair.split(":"); locked = null; h.focus("mem:" + a); h.pin(["mem:" + a, "mem:" + c]); }
+    else if (d.mem) { const tk = "mem:" + d.mem; h.focus(tk); locked = locked === tk ? null : tk; h.pin(locked ? [locked] : []); render(); }
+    else if (d.src) h.openChat(Number(d.src));
+    else if (d.area) { const id = Number(d.area); if (closed.has(id)) closed.delete(id); else closed.add(id); render(); }
+  });
+  root.addEventListener("input", (e) => { const el = e.target as HTMLInputElement; if (el.dataset?.asd !== undefined) { asDate = el.value; root.querySelector<HTMLButtonElement>("[data-asgo]")?.toggleAttribute("disabled", !asDate || asBusy); } else if (el.dataset?.asq !== undefined) asQ = el.value; });
+  root.addEventListener("submit", (e) => {
+    { const af = (e.target as HTMLElement).closest<HTMLFormElement>("form[data-alias]"); if (af) { e.preventDefault(); const w = af.querySelector("input")!.value.trim(); if (!w) return; void h.alias(Number(af.dataset.alias), w).then((r) => { aliasNote = r.error ?? "Добавлено"; units.delete(Number(af.dataset.alias)); ents = null; }, () => { aliasNote = "Не получилось"; }).finally(render); return; } }
+    const f = (e.target as HTMLElement).closest<HTMLFormElement>("form[data-form]"); if (!f) return; e.preventDefault();
+    const id = Number(f.dataset.form), text = f.querySelector("textarea")!.value, topics = f.querySelector<HTMLInputElement>("input")!.value;
+    editing = null; void h.edit(id, { text, topics });
+  });
+  root.addEventListener("mouseover", (e) => { const r = (e.target as HTMLElement).closest<HTMLElement>("[data-mem]"); if (r && !locked) h.pin(["mem:" + r.dataset.mem]); });
+  root.addEventListener("mouseout", (e) => { if ((e.target as HTMLElement).closest("[data-mem]") && !locked) h.pin([]); });
+  input.addEventListener("input", () => { q = input.value.trim().toLowerCase(); render(); });
+  render();
+  return { update(s: ListState) { st = s; ents = null; units.clear(); conStale = true; cluStale = true; hypStale = true; render(); } };
+}
