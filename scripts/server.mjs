@@ -35,6 +35,39 @@ export function createApp({ root, db, dist = null }) {
   const chatId = (m) => { const id = Number(m); return Number.isInteger(id) && id > 0 ? id : 0; };
   const firstLine = (t) => t.replace(/\s+/g, " ").trim().slice(0, 50) || "Новый чат";
 
+  // ——— Фоновая очередь запоминания ———
+  // learn() больше не блокирует ответ пользователю: задача ставится в очередь,
+  // обрабатывается после res.end(), с тремя попытками при сетевых ошибках.
+  const learnQueue = [];   // { s, model, chatId, userText, reply, tries }
+  let learnBusy = false;
+  let learnLast = { at: null, chatId: null, ok: null, error: null }; // для /api/learn/status
+
+  async function learnWorker() {
+    if (learnBusy) return;
+    learnBusy = true;
+    try {
+      while (learnQueue.length) {
+        const job = learnQueue.shift();
+        const result = await learn(job.s, job.model, job.chatId, job.userText, job.reply, job.userId);
+        learnLast = { at: new Date().toISOString(), chatId: job.chatId, ok: !result?.error, error: result?.error?.error ?? null };
+        if (result?.error && job.tries < 3) {
+          // сетевая или временная ошибка — повтор через 10 секунд
+          const code = result.error?.code;
+          const retryable = !code || code >= 500 || code === 429;
+          if (retryable) {
+            setTimeout(() => { learnQueue.push({ ...job, tries: job.tries + 1 }); void learnWorker(); }, 10000 * job.tries);
+          }
+        }
+      }
+    } finally { learnBusy = false; }
+  }
+
+  /** Ставит задачу запоминания в очередь и возвращает немедленно. */
+  function learnLater(s, model, chatId, userText, reply, userId) {
+    learnQueue.push({ s, model, chatId, userText, reply, userId, tries: 1 });
+    void learnWorker();
+  }
+
   // ——— Память: модель сама выделяет факты из беседы; они становятся нейронами «мозга» ———
   const LEARN = "Ты помогаешь ассистенту запоминать важное о собеседнике. Из реплик выдели устойчивые факты о пользователе и его делах: люди, работа, техника, места, планы, предпочтения, договорённости. "
     + "Не запоминай пароли, ключи, номера карт и документов, здоровье и случайные мелочи. Верни ТОЛЬКО JSON-массив до {N} объектов вида "
@@ -250,9 +283,12 @@ export function createApp({ root, db, dist = null }) {
         send({ assistant: db.addMessage(id, "assistant", out.text), done: true });
         if (s.memory !== false && !ctrl.signal.aborted) {
           if (mem.length && db.getRecallCfg().check) { const bad = await checkAnswer(s, model, text, out.text, mem); if (bad && !ctrl.signal.aborted) send({ check: bad }); }
-          send({ brain: await learn(s, model, id, text, out.text, userId) });
         }
-        res.end(); void summarize(s, model, id); return;
+        res.end();
+        // Запоминание и резюме идут в фоне — не задерживают закрытие ответа
+        if (s.memory !== false && !ctrl.signal.aborted) learnLater(s, model, id, text, out.text, userId);
+        void summarize(s, model, id);
+        return;
       }
       if (out.partial) { db.addMessage(id, "assistant", out.partial); }
       if (out.aborted) return res.end();
@@ -387,6 +423,9 @@ export function createApp({ root, db, dist = null }) {
     }
     if (pathname === "/api/graph" || pathname.startsWith("/api/chats")) return chats(req, res, pathname);
     if (pathname === "/api/brain" && req.method === "GET") { const open = (new URL(req.url ?? "/", "http://x").searchParams.get("open") ?? "").split(",").map((x) => x.trim()).filter(Boolean).slice(0, 16); return json(res, 200, db.memGraph({ open })); }
+    if (pathname === "/api/learn/status" && req.method === "GET") {
+      return json(res, 200, { queue: learnQueue.length, busy: learnBusy, last: learnLast });
+    }
     if (pathname === "/api/memories" && req.method === "GET") return json(res, 200, { memory: read().memory !== false, total: db.countMemories(), items: db.listMemories().slice(0, 100).map((m) => ({ id: m.id, text: m.text, topics: m.topics, hits: m.strength, at: m.at })) });
     if (pathname === "/api/vectors" && req.method === "GET") { const s = read(); return json(res, 200, { ...db.vecStats(), model: s.embedModel || embedState.model || embedAuto.model || "", ok: embedState.ok, error: embedState.error }); }
     if (pathname === "/api/vectors/build" && req.method === "POST") {
