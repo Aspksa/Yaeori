@@ -1,4 +1,4 @@
-export interface Conn { keySet: boolean; model: string; fallbackModel: string; memory: boolean; baseUrl: string }
+export interface Conn { keySet: boolean; model: string; fallbackModel: string; memory: boolean; baseUrl: string; mem0KeySet: boolean; mem0UserId: string }
 export interface Explained { error?: string; hint?: string; code?: number | string; detail?: string }
 export interface CheckResult extends Explained { ok: boolean; models?: string[]; modelFound?: boolean | null; fallbackFound?: boolean | null }
 export interface TestResult extends Explained { ok: boolean; model?: string; ms?: number; text?: string }
@@ -12,7 +12,7 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
   return data;
 }
 export const getConn = () => call<Conn>("/api/settings");
-export const saveConn = (patch: { key?: string | null; model?: string; fallbackModel?: string; memory?: boolean; baseUrl?: string }) =>
+export const saveConn = (patch: { key?: string | null; model?: string; fallbackModel?: string; memory?: boolean; baseUrl?: string; mem0Key?: string | null; mem0UserId?: string }) =>
   call<Conn>("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
 export const testModel = (model: string) => call<TestResult>("/api/test-model", { method: "POST", body: JSON.stringify({ model }) });
 export const getGuide = () => call<Guide>("/api/errors-guide");
