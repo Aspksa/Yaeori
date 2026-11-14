@@ -363,9 +363,22 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       if (m.kind !== "msg" || !m.visible) continue;
       const hb = byKey.get("h" + m.grp); if (!hb) continue;
       const a = toScreen(hb.x, hb.y), b = toScreen(m.x, m.y), on = hb.chatId === selected || hl === m.grp;
-      if (o.layout === "sectors" && !on) continue;
       const g = ctx.createLinearGradient(a.x, a.y, b.x, b.y); g.addColorStop(0, on ? hue(hb) : pal.line); g.addColorStop(1, "transparent");
-      ctx.strokeStyle = g; ctx.globalAlpha = (on ? 0.8 : 0.5) * dimOf(m); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      // в sectors постоянно показываем тонкие лучи (как в видео)
+      ctx.strokeStyle = g; ctx.globalAlpha = (on ? 0.8 : o.layout === "sectors" ? 0.18 : 0.5) * dimOf(m); ctx.lineWidth = on ? 1 : 0.5; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    // ★ ЗВЕЗДА: hover на кружке чата → белые лучи от всех его нейронов к нему
+    if (o.layout === "sectors" && hover?.kind === "hub" && !isArea(hover)) {
+      const hp = toScreen(hover.x, hover.y);
+      const starMsgs = order.filter((m) => m.kind === "msg" && m.grp === hover!.grp && m.visible);
+      ctx.lineWidth = 0.8;
+      for (const m of starMsgs) {
+        const mp = toScreen(m.x, m.y);
+        const g = ctx.createLinearGradient(mp.x, mp.y, hp.x, hp.y);
+        g.addColorStop(0, "rgba(255,255,255,0.7)"); g.addColorStop(1, "rgba(255,255,255,0.05)");
+        ctx.strokeStyle = g; ctx.globalAlpha = 0.65; ctx.beginPath(); ctx.moveTo(mp.x, mp.y); ctx.lineTo(hp.x, hp.y); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
     }
     // нейрон помнит, из какой беседы он пришёл
     if (o.group === "chat" && o.links) for (const m of order) {
@@ -397,7 +410,7 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     // подписи узлов без наложений: сначала важные (наведённые, выбранные, отделы по размеру), остальные пропускаем, если место занято
     const placed: [number, number, number, number][] = [], labelOk = new Set<string>();
     const tryPlace = (x0: number, y0: number, wd: number, ht: number) => { for (const q of placed) if (x0 < q[0] + q[2] && x0 + wd > q[0] && y0 < q[1] + q[3] && y0 + ht > q[1]) return false; placed.push([x0, y0, wd, ht]); return true; };
-    const hubLabel = (n: N) => { const lim = o.layout === "tile" ? 12 : 22; return (n.text.length > lim ? n.text.slice(0, lim - 1) + "…" : n.text) + (o.collapsed.includes(n.key) ? `  +${n.size}` : n.more ? `  +${n.more}` : ""); };
+    const hubLabel = (n: N) => { const lim = o.layout === "tile" ? 12 : 22; return ((n.text.length > lim ? n.text.slice(0, lim - 1) + "…" : n.text) + (o.collapsed.includes(n.key) ? `  +${n.size}` : n.more ? `  +${n.more}` : "")).toUpperCase(); };
     ctx.textRendering = "optimizeLegibility";
     for (const n of order.filter((x) => x.kind === "hub" && x.visible).sort((a, b) => Number(b === hover) - Number(a === hover) || Number(b.chatId === selected) - Number(a.chatId === selected) || Number(isArea(b)) - Number(isArea(a)) || b.size - a.size)) {
       const p = toScreen(n.x, n.y), r = Math.max(3, radius(n) * cam.k); ctx.font = `${isArea(n) ? 600 : 500} ${isArea(n) ? 12.5 : 11}px ${SANS}`;
@@ -424,10 +437,16 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       // все узлы — круги (квадраты убраны)
       if (n.kind === "hub" && !isArea(n) && o.layout !== "sectors") { ctx.beginPath(); ctx.roundRect(p.x - r, p.y - r, r * 2, r * 2, r * 0.35); ctx.fill(); }
       else if (n.kind === "hub" && !isArea(n) && o.layout === "sectors") {
-        // на внешнем кольце: кружок с обводкой цвета темы
+        // на внешнем кольце: кружок с обводкой цвета темы + инициал внутри
         const cr2 = Math.max(5, 7 * cam.k); ctx.globalAlpha = dim * fade;
         ctx.fillStyle = pal.bg; ctx.beginPath(); ctx.arc(p.x, p.y, cr2, 0, TAU); ctx.fill();
         ctx.strokeStyle = hue(n); ctx.lineWidth = n === hover || n.chatId === selected ? 2.2 : 1.4; ctx.globalAlpha = dim; ctx.beginPath(); ctx.arc(p.x, p.y, cr2, 0, TAU); ctx.stroke();
+        // инициал
+        if (cr2 >= 5) {
+          const letter = n.text.trim()[0]?.toUpperCase() ?? "?";
+          ctx.font = `600 ${Math.max(6, cr2 * 0.9)}px ${SANS}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = hue(n); ctx.globalAlpha = dim * 0.9;
+          ctx.fillText(letter, p.x, p.y);
+        }
       }
       else { const tw = (n.kind === "msg" && !n.key2 && !neu(n)) ? (still ? 1 : 0.88 + Math.sin(now * 0.002 + n.id * 1.7) * 0.12) : 1; ctx.globalAlpha = dim * fade * tw; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill(); }
       if (neu(n) && n.tier === "fresh" && !still) { ctx.globalAlpha = dim * (0.1 + 0.08 * Math.sin(now * 0.004 + n.id)); ctx.fillStyle = hue(n); ctx.beginPath(); ctx.arc(p.x, p.y, r * 2.6, 0, TAU); ctx.fill(); ctx.globalAlpha = dim * fade; }
