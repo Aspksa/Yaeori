@@ -7,8 +7,9 @@ interface Ctx { prefs: () => Prefs; set: (patch: Partial<Prefs>) => void; rerend
 interface Section { id: string; title: string; lead: string; keywords: string }
 
 export const SECTIONS: Section[] = [
-  { id: "conn", title: "Подключение", lead: "Ключ Cloud.ru хранится только на этом компьютере.", keywords: "ключ api cloud.ru соединение подключить адрес" },
+  { id: "conn", title: "Подключение", lead: "Ключ API модели хранится только на этом компьютере.", keywords: "ключ api openai cloud.ru соединение подключить адрес" },
   { id: "model", title: "Модель", lead: "Основная и запасная модель нейросети.", keywords: "модель запасная нейросеть" },
+  { id: "mem0", title: "Mem0 Cloud", lead: "Долгая память пользователя в Mem0 без Ollama.", keywords: "mem0 память облако api ключ пользователь long term memory ollama" },
   { id: "memory", title: "Память", lead: "Что Yaeori запоминает из бесед и показывает в мозге.", keywords: "память мозг факты забыть запоминать нейроны" },
   { id: "look", title: "Внешний вид", lead: "Тема, акцент, размер текста, плотность и скругления.", keywords: "тема тёмная светлая цвет акцент скругление размер текста плотность шрифт" },
   { id: "data", title: "Данные", lead: "Резервная копия и сброс настроек.", keywords: "экспорт импорт резервная копия сброс по умолчанию удалить" },
@@ -47,9 +48,9 @@ function connBody() {
   const pill = `<span class="pill ${conn.keySet ? "ok" : "warn"}">${conn.keySet ? "Ключ задан" : "Ключ не задан"}</span>
     <button type="button" class="pill ${conn.model ? "ok" : "warn"}" data-toc="model" title="Перейти к выбору модели">${conn.model ? "Модель: " + esc(conn.model) : "Модель не выбрана"}</button>`;
   return `<div class="row">${pill}${status ? `<span class="muted" role="status">${esc(status)}</span>` : ""}</div>
-    <label class="field"><span>API-ключ</span><span class="row nowrap"><input id="set-key" type="password" name="yaeori-key" autocomplete="new-password" spellcheck="false" placeholder="${conn.keySet ? "Вставьте новый ключ, чтобы заменить" : "Вставьте ключ из консоли Cloud.ru"}" value="${esc(drafts.get("set-key") ?? "")}" data-draft />
+    <label class="field"><span>Ключ API модели</span><span class="row nowrap"><input id="set-key" type="password" name="yaeori-key" autocomplete="new-password" spellcheck="false" placeholder="${conn.keySet ? "Вставьте новый ключ, чтобы заменить" : "Например, ключ OpenAI API"}" value="${esc(drafts.get("set-key") ?? "")}" data-draft />
       <button class="btn" type="button" data-act="eye" aria-label="Показать ключ" aria-pressed="false">Показать</button></span></label>
-    ${field("set-base", "Адрес API", conn.baseUrl, { ph: "https://foundation-models.api.cloud.ru/v1" })}${problemHtml()}
+    ${field("set-base", "Адрес OpenAI-совместимого API", conn.baseUrl, { ph: "https://api.openai.com/v1" })}${problemHtml()}
     <div class="row"><button class="btn primary" data-act="save-conn"${busy ? " disabled" : ""}>Сохранить</button>
       <button class="btn" data-act="check"${busy || !conn.keySet ? " disabled" : ""}>Проверить</button>
       ${conn.keySet ? `<button class="btn danger" data-act="del-key"${busy ? " disabled" : ""}>Удалить ключ</button>` : ""}</div>`;
@@ -63,7 +64,7 @@ function testHtml(name: string) {
 function modelTop() {
   if (!conn) return "";
   const m = conn.model, miss = models.length > 0 && m && !models.includes(m);
-  return `<div class="mdl-cur"><span class="muted">Модель</span>${m ? `<code>${esc(m)}</code>` : `<em class="muted">не выбрана</em>`}${miss ? `<span class="pill warn" title="Такого названия нет в списке Cloud.ru">нет в списке</span>` : ""}
+  return `<div class="mdl-cur"><span class="muted">Модель</span>${m ? `<code>${esc(m)}</code>` : `<em class="muted">не выбрана</em>`}${miss ? `<span class="pill warn" title="Такого названия нет в списке API">нет в списке</span>` : ""}
       ${m ? `<button class="btn small" data-act="test" data-m="${esc(m)}"${tests[m] === "wait" ? " disabled" : ""}>Проверить</button>` : ""}</div>${testHtml(m)}${problemHtml()}
     ${models.length ? `<label class="field mdl-fb"><span>Запасная (если основная не ответит)</span><select id="set-fb"><option value="">не нужна</option>${models.map((x) => `<option value="${esc(x)}"${x === conn!.fallbackModel ? " selected" : ""}>${esc(x)}</option>`).join("")}</select></label>` : ""}
     ${status ? `<p class="muted" role="status">${esc(status)}</p>` : ""}`;
@@ -71,7 +72,7 @@ function modelTop() {
 function modelListHtml() {
   if (!conn) return "";
   if (!models.length) return `<p class="muted">${listing ? "Загружаю список…" : conn.keySet ? "Список не получен. Введите название модели вручную." : "Сначала сохраните ключ в разделе «Подключение»."}</p>
-    ${listing ? "" : field("set-model", "Название модели", conn.model, { ph: "Из консоли Cloud.ru, например openai/gpt-oss-120b" })}`;
+    ${listing ? "" : field("set-model", "Название модели", conn.model, { ph: "Например gpt-5-mini" })}`;
   const q = mq.trim().toLowerCase(), list = models.filter((m) => !q || m.toLowerCase().includes(q));
   if (!list.length) return `<p class="muted">Ничего не найдено.</p>`;
   return list.map((m) => `<button class="mdl-row${m === conn!.model ? " is-main" : ""}" data-pick="main" data-m="${esc(m)}" role="radio" aria-checked="${m === conn!.model}"><span>${esc(m)}</span><i aria-hidden="true">✓</i></button>`).join("");
@@ -93,11 +94,21 @@ function memoryBody() {
   if (!conn) return `<p class="muted">Загрузка…</p>`;
   const items = (mem?.items ?? []).map((m) => `<div class="mem-item"><div>${esc(m.text)}<small>${m.topics.map(esc).join(", ")} · подтверждено ×${m.hits}</small></div><button class="btn small" data-mem-del="${m.id}" aria-label="Забыть: ${esc(m.text)}">Забыть</button></div>`).join("");
   return `<label class="viz-check"><input type="checkbox" id="set-memory" ${conn.memory ? "checked" : ""}> Запоминать факты из бесед</label>
-    <p class="muted">Факты хранятся только на этом компьютере. Чтобы их выделять и учитывать в ответах, они отправляются в модель Cloud.ru вместе с беседой. Модели велено не запоминать пароли, ключи, номера карт и документов.</p>
+    <p class="muted">Факты для карты «Мозг» хранятся на этом компьютере. Чтобы их выделять и учитывать в ответах, они отправляются в подключённую модель. Модели велено не запоминать пароли, ключи, номера карт и документов.</p>
     <div class="row"><button class="btn" data-act="scan"${busy || !conn.keySet || !conn.model ? " disabled" : ""}>Вспомнить из бесед</button>
       <button class="btn danger" data-act="forget-all"${mem?.total ? "" : " disabled"}>Забыть всё</button>
       <span class="muted" role="status">${esc(memStatus)}${mem ? ` Воспоминаний: ${mem.total}` : ""}</span></div>
     ${items ? `<div class="mem-list">${items}</div>` : `<p class="muted">Пока ничего не запомнено.</p>`}`;
+}
+function mem0Body() {
+  if (!conn) return `<p class="muted">Загрузка…</p>`;
+  const pill = `<span class="pill ${conn.mem0KeySet ? "ok" : "warn"}">${conn.mem0KeySet ? "Mem0 подключён" : "Mem0 не подключён"}</span>`;
+  return `<div class="row">${pill}${status ? `<span class="muted" role="status">${esc(status)}</span>` : ""}</div>
+    <label class="field"><span>Mem0 API key</span><input id="set-mem0-key" type="password" name="yaeori-mem0-key" autocomplete="new-password" spellcheck="false" placeholder="${conn.mem0KeySet ? "Вставьте новый ключ, чтобы заменить" : "m0-…"}" value="${esc(drafts.get("set-mem0-key") ?? "")}" data-draft /></label>
+    ${field("set-mem0-user", "Идентификатор пользователя", conn.mem0UserId, { ph: "yaeori-user" })}
+    <p class="muted">Mem0 получает пары сообщений и возвращает только подходящие воспоминания для следующего ответа. Это облачная память: не добавляйте в чат пароли, ключи, платёжные данные и документы.</p>
+    <div class="row"><button class="btn primary" data-act="save-mem0"${busy ? " disabled" : ""}>Сохранить Mem0</button>
+      ${conn.mem0KeySet ? `<button class="btn danger" data-act="del-mem0-key"${busy ? " disabled" : ""}>Отключить Mem0</button>` : ""}</div>`;
 }
 function lookBody(p: Prefs) {
   const themes = THEMES.map(([id, l, h]) => `<button class="theme-card" role="radio" aria-checked="${p.theme === id}" data-theme-id="${id}"><strong>${l}</strong><small>${h}</small></button>`).join("");
@@ -109,14 +120,14 @@ function lookBody(p: Prefs) {
 }
 const dataBody = () => `<div class="row"><button class="btn" data-act="export">Сохранить настройки в файл</button><button class="btn" data-act="import">Загрузить из файла</button>
   <input type="file" accept="application/json,.json" hidden id="set-import" /></div>
-  <p class="muted">Файл содержит только внешний вид. Ключ Cloud.ru в него не попадает.</p>
+  <p class="muted">Файл содержит только внешний вид. Ключи API в него не попадают.</p>
   <div class="row"><button class="btn danger" data-act="reset-all">Сбросить внешний вид</button></div>`;
-const errorsHtml = () => !guide ? "" : `<details class="mdl-manual"><summary>Что значат ошибки Cloud.ru</summary><table class="err-table"><tbody>${[...guide.http, ...guide.net, ...guide.other].map((g) => `<tr><td><code>${esc(String(g.code))}</code></td><td><strong>${esc(g.title)}</strong><br><span class="muted">${esc(g.hint)}</span></td></tr>`).join("")}</tbody></table></details>`;
+const errorsHtml = () => !guide ? "" : `<details class="mdl-manual"><summary>Что значат ошибки API</summary><table class="err-table"><tbody>${[...guide.http, ...guide.net, ...guide.other].map((g) => `<tr><td><code>${esc(String(g.code))}</code></td><td><strong>${esc(g.title)}</strong><br><span class="muted">${esc(g.hint)}</span></td></tr>`).join("")}</tbody></table></details>`;
 const aboutBody = () => `${errorsHtml()}<div class="set-row"><strong>Версия</strong><code>${esc(pkg.version)}</code></div>
   <div class="set-row"><strong>Горячие клавиши</strong><ul class="keys"><li><kbd>Alt</kbd>+<kbd>1</kbd> Главная</li><li><kbd>Alt</kbd>+<kbd>2</kbd> Настройки</li><li><kbd>/</kbd> поиск по настройкам</li></ul></div>`;
 
 export function settingsView(p: Prefs) {
-  const body: Record<string, string> = { conn: connBody(), model: modelBody(), memory: memoryBody(), look: lookBody(p), data: dataBody(), about: aboutBody() };
+  const body: Record<string, string> = { conn: connBody(), model: modelBody(), mem0: mem0Body(), memory: memoryBody(), look: lookBody(p), data: dataBody(), about: aboutBody() };
   const toc = SECTIONS.map((s) => `<button class="chip" data-toc="${s.id}">${esc(s.title)}</button>`).join("");
   return `<header class="pg-head"><h1>Настройки</h1><p class="muted">Внешний вид сохраняется в браузере, ключ — на этом компьютере.</p></header>
     <div class="set-tools"><input id="set-search" type="search" placeholder="Найти настройку…  ( / )" autocomplete="off" spellcheck="false" aria-label="Поиск по настройкам" />
@@ -192,6 +203,7 @@ export function bindSettings(ctx: Ctx) {
       if (id === "look") ctx.set({ theme: DEFAULT_PREFS.theme, accent: DEFAULT_PREFS.accent, custom: DEFAULT_PREFS.custom, textSize: DEFAULT_PREFS.textSize, density: DEFAULT_PREFS.density, radius: DEFAULT_PREFS.radius });
       if (id === "conn") { for (const k of ["set-key", "set-base"]) drafts.delete(k); void run(ctx, async () => { conn = await saveConn({ key: null, baseUrl: "" }); return "Подключение сброшено"; }); return; }
       if (id === "model") { drafts.delete("set-model"); void run(ctx, async () => { conn = await saveConn({ model: "", fallbackModel: "" }); return "Модели сброшены"; }); return; }
+      if (id === "mem0") { for (const k of ["set-mem0-key", "set-mem0-user"]) drafts.delete(k); void run(ctx, async () => { conn = await saveConn({ mem0Key: null, mem0UserId: "" }); return "Mem0 отключён"; }); return; }
       if (id === "memory") { void run(ctx, async () => { conn = await saveConn({ memory: true }); return "Запоминание включено"; }); return; }
       if (id === "data") { download("yaeori-settings.json", { ...p, collapsed: [] }); return; }
       ctx.rerender(); return;
@@ -205,6 +217,12 @@ export function bindSettings(ctx: Ctx) {
         drafts.delete("set-key"); drafts.delete("set-base"); problem = null; if (conn.keySet) { autoChecked = true; void loadModels(null, true); } return key ? "Сохранено" : "Адрес сохранён";
       }); break;
       case "del-key": if (confirm("Удалить сохранённый ключ?")) void run(ctx, async () => { conn = await saveConn({ key: null }); drafts.delete("set-key"); models = []; problem = null; autoChecked = false; return "Ключ удалён"; }); break;
+      case "save-mem0": void run(ctx, async () => {
+        const key = val("set-mem0-key").trim(), userId = val("set-mem0-user").trim();
+        conn = await saveConn({ ...(key ? { mem0Key: key } : {}), mem0UserId: userId });
+        drafts.delete("set-mem0-key"); drafts.delete("set-mem0-user"); return key ? "Mem0 сохранён" : "Идентификатор сохранён";
+      }); break;
+      case "del-mem0-key": if (confirm("Отключить Mem0? Сохранённые в Mem0 воспоминания не будут удалены.")) void run(ctx, async () => { conn = await saveConn({ mem0Key: null }); drafts.delete("set-mem0-key"); return "Mem0 отключён"; }); break;
       case "check": void run(ctx, async () => {
         const r = await checkConn();
         if (!r.ok) { problem = r; return ""; }
