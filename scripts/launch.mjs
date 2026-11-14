@@ -18,7 +18,8 @@ const die = (m) => { console.error(`\n\x1b[31m[ОШИБКА] ${m}\x1b[0m`); proc
 // shell нужен на Windows для .cmd; аргументы здесь только наши, без пользовательского ввода.
 const run = (cmd, a) => spawnSync(cmd, a, { cwd: root, stdio: "inherit", shell: process.platform === "win32" }).status === 0;
 
-if (!existsSync(path.join(root, "node_modules", "vite")) || !existsSync(path.join(root, "node_modules", "sql.js"))) { step("Установка зависимостей"); if (!run(npm, ["install", "--no-audit", "--no-fund"])) die("npm install не удался. Проверьте интернет."); }
+const packages = ["vite", "sql.js", "@langchain/core", "@langchain/openai", "mem0ai"];
+if (packages.some((name) => !existsSync(path.join(root, "node_modules", name)))) { step("Установка зависимостей"); if (!run(npm, ["install", "--no-audit", "--no-fund"])) die("npm install не удался. Проверьте интернет."); }
 if (!dev) {
   if (!flag("--skip-checks")) { step("Проверка типов"); if (!run(npm, ["run", "typecheck"])) die("Проверка типов не прошла. Можно запустить с --skip-checks."); }
   step("Сборка"); if (!run(npm, ["run", "build"])) die("Сборка не удалась.");
