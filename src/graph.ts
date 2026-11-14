@@ -185,13 +185,13 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       let at = -1.5708 + rot;
       items.forEach((it, i) => {
         const a0 = at + gapA / 2, a1 = a0 + spans[i]!; at += spans[i]! + gapA;
-        let r = rin, k = 0, last = rin; const cols = colsOf(spans[i]!, g);
+        let r = rin, k = 0; const cols = colsOf(spans[i]!, g);
         while (k < it.cap) {
           const n = Math.min(cols, it.cap - k);
           for (let c = 0; c < n; c++) { const aa = a0 + ((c + 0.5) / cols) * (a1 - a0), x = Math.cos(aa) * r, y = Math.sin(aa) * r, m = it.ms[k + c]; if (m) { m.tx = x; m.ty = y; } else slots.push({ x, y, hue: it.hb.hue }); }
-          k += n; last = r; r += g;
+          k += n; r += g;
         }
-        const mid = (a0 + a1) / 2, hr = Math.min(last + 14 + 4 * dotK, R * 1.0); it.hb.tx = Math.cos(mid) * hr; it.hb.ty = Math.sin(mid) * hr;
+        const mid = (a0 + a1) / 2, hr = R * 1.12; it.hb.tx = Math.cos(mid) * hr; it.hb.ty = Math.sin(mid) * hr;
       });
     } else if (o.layout === "rings") {
       const tot = order.filter((n) => n.kind === "msg" && n.visible).length, g = (order.some(neu) ? Math.max(11, 24 - tot * 0.12) : 8.5 + 8 * Math.max(0, 1 - tot / 250)) * o.size, r0 = R * (0.3 + 0.2 * Math.max(0, 1 - tot / 120)), wts = hubs.map((hb) => Math.pow(Math.max(msgsOf(hb.grp).length, 3), 0.6)), wsum = wts.reduce((x, y) => x + y, 0) || 1;
@@ -297,6 +297,11 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
     const c0 = toScreen(core.x, core.y);
     ctx.strokeStyle = pal.line; ctx.lineWidth = 1;
     for (const rr of [R * 0.28, R * 0.58, R * 0.85, R * 1.08]) { ctx.globalAlpha = o.layout === "sectors" ? (rr === R * 1.08 ? 0.5 : 0.22) : rr === R * 1.08 ? 0.9 : 0.55; ctx.beginPath(); ctx.arc(c0.x, c0.y, rr * cam.k, 0, TAU); ctx.stroke(); }
+    // внешнее кольцо чатов (только в раскладке Секторы)
+    if (o.layout === "sectors") {
+      ctx.strokeStyle = pal.line; ctx.lineWidth = 1.2; ctx.globalAlpha = 0.55;
+      ctx.beginPath(); ctx.arc(c0.x, c0.y, R * 1.12 * cam.k, 0, TAU); ctx.stroke();
+    }
     ctx.globalAlpha = 1;
     if (o.layout === "sectors") { // свободные ячейки секторов: растут и заполняются
       const sr = Math.max(0.9, 1.35 * dotK * cam.k);
@@ -416,9 +421,15 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       }
       const fade = n.tier === "fading" ? 0.45 : 1;
       ctx.globalAlpha = dim * fade; ctx.fillStyle = n.kind === "hub" ? hue(n) : n.tier === "fading" ? pal.muted : hue(n);
-      if (n.kind === "msg" && !n.key2 && o.layout !== "sectors") { const tw = still ? 1 : 0.88 + Math.sin(now * 0.002 + n.id * 1.7) * 0.12; ctx.globalAlpha = dim * fade * tw; ctx.fillRect(p.x - r * 0.8, p.y - r * 0.8, r * 1.6, r * 1.6); }
-      else if (n.kind === "hub" && !isArea(n)) { ctx.beginPath(); ctx.roundRect(p.x - r, p.y - r, r * 2, r * 2, r * 0.35); ctx.fill(); }
-      else { ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill(); }
+      // все узлы — круги (квадраты убраны)
+      if (n.kind === "hub" && !isArea(n) && o.layout !== "sectors") { ctx.beginPath(); ctx.roundRect(p.x - r, p.y - r, r * 2, r * 2, r * 0.35); ctx.fill(); }
+      else if (n.kind === "hub" && !isArea(n) && o.layout === "sectors") {
+        // на внешнем кольце: кружок с обводкой цвета темы
+        const cr2 = Math.max(5, 7 * cam.k); ctx.globalAlpha = dim * fade;
+        ctx.fillStyle = pal.bg; ctx.beginPath(); ctx.arc(p.x, p.y, cr2, 0, TAU); ctx.fill();
+        ctx.strokeStyle = hue(n); ctx.lineWidth = n === hover || n.chatId === selected ? 2.2 : 1.4; ctx.globalAlpha = dim; ctx.beginPath(); ctx.arc(p.x, p.y, cr2, 0, TAU); ctx.stroke();
+      }
+      else { const tw = (n.kind === "msg" && !n.key2 && !neu(n)) ? (still ? 1 : 0.88 + Math.sin(now * 0.002 + n.id * 1.7) * 0.12) : 1; ctx.globalAlpha = dim * fade * tw; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill(); }
       if (neu(n) && n.tier === "fresh" && !still) { ctx.globalAlpha = dim * (0.1 + 0.08 * Math.sin(now * 0.004 + n.id)); ctx.fillStyle = hue(n); ctx.beginPath(); ctx.arc(p.x, p.y, r * 2.6, 0, TAU); ctx.fill(); ctx.globalAlpha = dim * fade; }
       // свечение у ключевых, выбранных, найденных и наведённых
       if (n.kind === "hub" || n === hover || pin?.has(n.key) || (n.kind === "msg" && n.key2 && (o.layout !== "sectors" && neu(n) || n.chatId === selected)) || (n.tier === "fresh" && o.layout !== "sectors") || (query && hit)) {
@@ -428,8 +439,20 @@ export function mountGraph(canvas: HTMLCanvasElement, tip: HTMLElement, cb: Call
       ctx.globalAlpha = 1;
       if (n.kind === "hub") {
         if (labelOk.has(n.key)) {
-          const t = hubLabel(n); ctx.font = `${isArea(n) ? 600 : 500} ${isArea(n) ? 12.5 : 11}px ${SANS}`; ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.lineJoin = "round"; ctx.lineWidth = 4; ctx.strokeStyle = pal.bg;
-          ctx.globalAlpha = (query && !hit ? 0.3 : 1) * (isArea(n) ? 1 : 0.82); ctx.strokeText(t, p.x, p.y - r - 8); ctx.fillStyle = hue(n); ctx.fillText(t, p.x, p.y - r - 8); ctx.globalAlpha = 1;
+          const t = hubLabel(n); ctx.font = `${isArea(n) ? 600 : 500} ${isArea(n) ? 12.5 : 11}px ${SANS}`; ctx.lineJoin = "round"; ctx.lineWidth = 4; ctx.strokeStyle = pal.bg;
+          if (o.layout === "sectors" && !isArea(n)) {
+            // подпись сбоку вдоль радиуса: снаружи кольца, текст ориентирован от центра
+            const ang = Math.atan2(n.y, n.x), outside = ang > -Math.PI / 2 && ang < Math.PI / 2;
+            ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(ang + (outside ? 0 : Math.PI));
+            ctx.textAlign = outside ? "left" : "right"; ctx.textBaseline = "middle";
+            const off = r + 10; ctx.globalAlpha = (query && !hit ? 0.3 : 1) * 0.9;
+            ctx.strokeText(t, outside ? off : -off, 0); ctx.fillStyle = hue(n); ctx.fillText(t, outside ? off : -off, 0);
+            ctx.restore();
+          } else {
+            ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+            ctx.globalAlpha = (query && !hit ? 0.3 : 1) * (isArea(n) ? 1 : 0.82); ctx.strokeText(t, p.x, p.y - r - 8); ctx.fillStyle = hue(n); ctx.fillText(t, p.x, p.y - r - 8);
+          }
+          ctx.globalAlpha = 1;
         }
       } else if (n.kind === "msg" && (o.labels || n.key2) && cam.k > 1.3) {
         ctx.font = `500 11px ${SANS}`; ctx.fillStyle = pal.muted; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.globalAlpha = dim; ctx.fillText((n.text.split(/\s+/)[0] ?? "").slice(0, 14), p.x + r + 4, p.y); ctx.globalAlpha = 1;
