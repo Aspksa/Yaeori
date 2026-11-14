@@ -133,7 +133,7 @@ export function mountHome(): () => void {
       const c = await getConn().catch(() => null); if (dead) return;
       const theme = MAP_THEMES.find((t) => t.id === map.theme)?.label ?? "";
       const sys: SysItem[] = [
-        { id: "key", label: "Ключ Cloud.ru", detail: c ? (c.keySet ? "задан" : "не задан") : "нет связи", ok: !!c?.keySet, icon: "key" },
+        { id: "key", label: "Ключ API", detail: c ? (c.keySet ? "задан" : "не задан") : "нет связи", ok: !!c?.keySet, icon: "key" },
         { id: "model", label: "Модель", detail: c?.model || "не выбрана", ok: !!c?.model, icon: "spark" },
         { id: "db", label: "Память", detail: c?.memory === false ? "выключена" : `${nn} воспомин., ${chatMsgs} сообщ.`, ok: c?.memory !== false, icon: "db" },
         { id: "chats", label: "Чаты", detail: String(chats.length), ok: true, icon: "chat" },
