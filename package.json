@@ -18,6 +18,9 @@
     "vite": "^5.4.0"
   },
   "dependencies": {
+    "@langchain/core": "^1.4.1",
+    "@langchain/openai": "^1.8.4",
+    "mem0ai": "^3.3.1",
     "sql.js": "^1.16.0"
   }
 }
